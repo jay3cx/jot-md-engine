@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jot Markdown 编辑器</title>
+    <link id="app-icon" rel="icon" type="image/svg+xml" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div class="header-inner">
+          <div class="identity"><img id="brand-logo" alt="" width="30" height="30" /><h1>Jot Markdown</h1></div>
+          <nav class="header-actions" aria-label="工作台面板">
+            <button id="open-shortcuts" type="button" aria-haspopup="dialog" disabled>快捷键</button>
+            <button id="open-style" type="button" aria-controls="inspector" aria-expanded="false" disabled>样式</button>
+            <button id="open-performance" type="button" aria-controls="inspector" aria-expanded="false" disabled>运行数据</button>
+          </nav>
+        </div>
+      </header>
+
+      <div class="workbar">
+        <div class="toolbar" aria-label="编辑器模式和示例">
+          <label>视图 <select id="mode" disabled>
+            <option value="live-preview" selected>即时预览</option>
+            <option value="split">源码与预览</option>
+            <option value="source">源码</option>
+            <option value="preview">只读预览</option>
+            <option value="pretext">预布局</option>
+          </select></label>
+          <label>示例 <select id="sample">
+            <option value="article">基础 Markdown</option>
+            <option value="text">混合大文本（约 1 MiB）</option>
+            <option value="list">列表（5,000 项）</option>
+            <option value="table">表格（2,000 行）</option>
+            <option value="code">代码（10,000 行）</option>
+            <option value="inline-task">任务与行内语法</option>
+            <option value="mermaid">Mermaid 图表</option>
+          </select></label>
+          <div class="sample-actions">
+            <button id="load" type="button" title="用所选示例替换全文" disabled>打开示例</button>
+            <button id="insert" type="button" disabled>插入到光标</button>
+          </div>
+          <button id="open-commands" type="button" class="command-trigger" disabled>命令面板 <kbd>Ctrl Shift P</kbd></button>
+        </div>
+      </div>
+
+      <div class="workspace">
+        <div class="paper-area">
+          <div id="editor-root" aria-label="Markdown 编辑器"></div>
+        </div>
+
+        <aside id="inspector" class="inspector" aria-labelledby="inspector-title" hidden>
+          <header class="panel-header">
+            <h2 id="inspector-title">样式</h2>
+            <button id="close-inspector" type="button" aria-label="关闭侧栏">关闭</button>
+          </header>
+          <section id="style-panel" class="panel-body" hidden>
+            <div class="field-grid">
+              <label>字体 <select id="font" disabled>
+                <option value="sans">无衬线</option>
+                <option value="serif" selected>衬线</option>
+                <option value="mono">等宽</option>
+              </select></label>
+              <label>代码行 <select id="code-wrap" disabled>
+                <option value="scroll">横向滚动</option>
+                <option value="wrap">自动换行</option>
+              </select></label>
+              <label>字号 <input id="font-size" type="number" min="14" max="26" value="16" /></label>
+              <button id="theme" type="button" aria-pressed="false">深色主题</button>
+            </div>
+            <fieldset class="plugin-options"><legend>预览插件</legend>
+              <label><input id="mermaid" type="checkbox" checked disabled /> Mermaid 图表</label>
+              <label><input id="heading-fold" type="checkbox" checked disabled /> 标题折叠</label>
+            </fieldset>
+            <div class="css-controls">
+              <label>CSS 目标 <select id="css-target"></select></label>
+              <code id="css-selector"></code>
+              <p id="css-help" class="panel-note">实时预览颜色。行高等尺寸由宿主的布局 API 设置。</p>
+              <label for="css-declarations">视觉声明</label>
+              <textarea id="css-declarations" rows="6" spellcheck="false" aria-describedby="css-help css-status"></textarea>
+              <div class="inline-actions">
+                <button id="css-example" type="button">试用示例</button>
+                <button id="css-reset" type="button">清除此组件样式</button>
+              </div>
+              <p id="css-status" class="panel-note" role="status"></p>
+            </div>
+          </section>
+          <section id="performance-panel" class="panel-body" hidden>
+            <button id="load-large" type="button" class="action">打开 1 MiB 示例</button>
+            <dl id="metric-cards" class="metric-cards">
+              <div>
+                <dt><button type="button" aria-describedby="hint-confirm" aria-expanded="false">正文确认</button>
+                  <span role="tooltip" id="hint-confirm">从编辑器接到修改，到 Rust 把正文写入内存并将修订号传回页面。此时可以保存这版 Markdown。「—」表示还没有编辑记录。</span></dt>
+                <dd id="metric-confirm">—</dd>
+              </div>
+              <div>
+                <dt><button type="button" aria-describedby="hint-parse" aria-expanded="false">确认后语法解析</button>
+                  <span role="tooltip" id="hint-parse">从正文确认，到同一修订的 Markdown 语法全部就绪。「同次返回」表示确认时语法也已就绪。后台解析期间仍能保存和输入，未解析的位置先显示源码。</span></dt>
+                <dd id="metric-parse">—</dd>
+              </div>
+              <div>
+                <dt><button type="button" aria-describedby="hint-plan" aria-expanded="false">视口预览规划</button>
+                  <span role="tooltip" id="hint-plan">最近一次为可见区域选择预览内容所花的时间。不含图表渲染和浏览器绘制。</span></dt>
+                <dd id="metric-plan">—</dd>
+              </div>
+              <div>
+                <dt><button type="button" aria-describedby="hint-rows" aria-expanded="false">已挂载行 / 全文行</button>
+                  <span role="tooltip" id="hint-rows">左侧是页面里实际挂载的编辑行，包含滚动缓冲区。右侧是全文的源码行数。只读视图按已挂载的顶层块计数。</span></dt>
+                <dd id="metric-rows">—</dd>
+              </div>
+              <div>
+                <dt><button type="button" aria-describedby="hint-heap" aria-expanded="false">页面 JS 堆</button>
+                  <span role="tooltip" id="hint-heap">浏览器报告的页面 JavaScript 堆用量。这个数值不能用来估算整个编辑器的内存。</span></dt>
+                <dd id="metric-heap">—</dd>
+              </div>
+            </dl>
+            <h3>最近操作</h3>
+            <ol id="runtime-log" class="runtime-log" aria-label="最近编辑器操作"></ol>
+          </section>
+        </aside>
+      </div>
+      <footer class="statusbar">
+        <span id="status" title="正文确认后即可保存这版 Markdown。此示例只在浏览器内存中编辑。" role="status" aria-live="polite">正在加载…</span>
+        <span id="document-size"></span>
+      </footer>
+    </main>
+
+    <dialog id="shortcut-dialog" class="shortcut-dialog" aria-labelledby="shortcut-title">
+      <header class="panel-header">
+        <h2 id="shortcut-title">快捷键</h2>
+        <form method="dialog"><button>关闭</button></form>
+      </header>
+      <div class="shortcut-filter">
+        <label>键位方案 <select id="shortcut-platform">
+          <option value="mac">macOS</option>
+          <option value="windows">Windows</option>
+        </select></label>
+        <label>筛选 <input id="shortcut-search" type="search" placeholder="按命令或键位搜索" autofocus /></label>
+        <p id="shortcut-storage-status" class="panel-note" role="status"></p>
+      </div>
+      <div id="shortcuts"></div>
+    </dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

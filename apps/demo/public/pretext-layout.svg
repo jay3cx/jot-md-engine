@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">PreText component layout</title>
+  <desc id="desc">Semantic nodes flow into estimated boxes and then measured preview boxes.</desc>
+  <rect width="1200" height="675" rx="32" fill="#edf4ee"/>
+  <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace">
+    <text x="72" y="92" fill="#24412e" font-size="34" font-weight="700">RenderNode → PreText → Preview</text>
+    <g transform="translate(72 150)">
+      <rect width="280" height="390" rx="20" fill="#fff" stroke="#9db6a4" stroke-width="3"/>
+      <text x="28" y="48" fill="#597262" font-size="20">RUST SEMANTICS</text>
+      <g fill="#dce9df">
+        <rect x="28" y="82" width="224" height="52" rx="8"/>
+        <rect x="28" y="150" width="224" height="72" rx="8"/>
+        <rect x="28" y="238" width="224" height="108" rx="8"/>
+      </g>
+      <g fill="#24412e" font-size="18"><text x="46" y="114">heading</text><text x="46" y="192">paragraph</text><text x="46" y="298">table · 4×3</text></g>
+    </g>
+    <path d="M380 345h112" stroke="#6e9278" stroke-width="6" stroke-linecap="round"/><path d="m478 326 24 19-24 19" fill="none" stroke="#6e9278" stroke-width="6"/>
+    <g transform="translate(520 150)">
+      <rect width="280" height="390" rx="20" fill="#fff9ec" stroke="#c39149" stroke-width="3"/>
+      <text x="28" y="48" fill="#8a642b" font-size="20">ESTIMATED BOXES</text>
+      <rect x="28" y="82" width="224" height="68" rx="8" fill="#f1d7a8"/>
+      <rect x="28" y="166" width="224" height="92" rx="8" fill="#f1d7a8"/>
+      <rect x="28" y="274" width="224" height="82" rx="8" fill="#f1d7a8"/>
+      <g fill="#67491d" font-size="18"><text x="46" y="122">68 px</text><text x="46" y="220">92 px</text><text x="46" y="324">158 px</text></g>
+    </g>
+    <path d="M828 345h112" stroke="#6e9278" stroke-width="6" stroke-linecap="round"/><path d="m926 326 24 19-24 19" fill="none" stroke="#6e9278" stroke-width="6"/>
+    <g transform="translate(968 150)">
+      <rect width="160" height="390" rx="20" fill="#183022"/>
+      <text x="24" y="48" fill="#bad1c0" font-size="20">MEASURE</text>
+      <rect x="24" y="82" width="112" height="72" rx="8" fill="#447456"/>
+      <rect x="24" y="170" width="112" height="88" rx="8" fill="#447456"/>
+      <rect x="24" y="274" width="112" height="96" rx="8" fill="#447456"/>
+    </g>
+  </g>
+</svg>

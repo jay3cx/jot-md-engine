@@ -1,0 +1,13 @@
+[package]
+name = "editor-protocol"
+version = "0.1.0"
+description = "Wire types for the Jot Markdown editor engine and its hosts"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

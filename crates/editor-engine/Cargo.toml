@@ -1,0 +1,11 @@
+[package]
+name = "editor-engine"
+version = "0.1.0"
+description = "Markdown document storage, incremental parsing and render projections for Jot"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+crop = { version = "0.4.3", default-features = false, features = ["utf16-metric"] }
+editor-protocol = { version = "0.1.0", path = "../editor-protocol" }

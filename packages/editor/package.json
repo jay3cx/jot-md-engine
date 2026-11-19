@@ -1,0 +1,120 @@
+{
+  "name": "@jot-md/editor",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Framework-neutral Markdown editor component backed by the Jot Rust/Wasm engine",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lin037/jot-md-engine.git",
+    "directory": "packages/editor"
+  },
+  "homepage": "https://github.com/lin037/jot-md-engine/tree/main/packages/editor#readme",
+  "bugs": {
+    "url": "https://github.com/lin037/jot-md-engine/issues"
+  },
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "THIRD-PARTY-NOTICES.txt"
+  ],
+  "types": "./dist/index.d.ts",
+  "module": "./dist/index.js",
+  "sideEffects": [
+    "./dist/styles.css",
+    "./dist/core.css",
+    "./dist/math.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./adapter": {
+      "types": "./dist/adapter/index.d.ts",
+      "import": "./dist/adapter/index.js"
+    },
+    "./component": {
+      "types": "./dist/component/index.d.ts",
+      "import": "./dist/component/index.js"
+    },
+    "./commands": {
+      "types": "./dist/core/commands/index.d.ts",
+      "import": "./dist/core/commands/index.js"
+    },
+    "./table": {
+      "types": "./dist/components/table/public.d.ts",
+      "import": "./dist/components/table/public.js"
+    },
+    "./math": {
+      "types": "./dist/components/math/katex.d.ts",
+      "import": "./dist/components/math/katex.js"
+    },
+    "./math/lazy": {
+      "types": "./dist/components/math/lazy-katex.d.ts",
+      "import": "./dist/components/math/lazy-katex.js"
+    },
+    "./mermaid": {
+      "types": "./dist/plugins/mermaid.d.ts",
+      "import": "./dist/plugins/mermaid.js"
+    },
+    "./heading-fold": {
+      "types": "./dist/plugins/heading-fold.d.ts",
+      "import": "./dist/plugins/heading-fold.js"
+    },
+    "./source": {
+      "types": "./dist/hosts/source/index.d.ts",
+      "import": "./dist/hosts/source/index.js"
+    },
+    "./observability": {
+      "types": "./dist/observability/index.d.ts",
+      "import": "./dist/observability/index.js"
+    },
+    "./preview": {
+      "types": "./dist/hosts/preview/index.d.ts",
+      "import": "./dist/hosts/preview/index.js"
+    },
+    "./render": {
+      "types": "./dist/render/index.d.ts",
+      "import": "./dist/render/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "import": "./dist/worker/index.js"
+    },
+    "./wasm": {
+      "types": "./dist/wasm/editor_wasm.d.ts",
+      "import": "./dist/wasm/editor_wasm.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./core.css": "./dist/core.css",
+    "./math.css": "./dist/math.css"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build/clean-package-dist.mjs editor && tsc -p tsconfig.build.json && node ../../scripts/build/build-wasm.mjs packages/editor/dist/wasm && node ../../scripts/build/build-editor-assets.mjs"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.8.1",
+    "@codemirror/lang-markdown": "^6.3.3",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.38.1",
+    "@jot-md/editor-protocol": "workspace:*",
+    "katex": "^0.18.1"
+  },
+  "keywords": [
+    "markdown",
+    "editor",
+    "codemirror",
+    "wasm",
+    "rust"
+  ]
+}

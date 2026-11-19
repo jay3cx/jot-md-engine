@@ -1,0 +1,30 @@
+{
+  "name": "jot-md-engine",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.11.0",
+  "scripts": {
+    "build:protocol": "pnpm --filter @jot-md/editor-protocol run build",
+    "build:editor": "pnpm run build:protocol && pnpm --filter @jot-md/editor run build",
+    "package:pack": "node scripts/release/pack-editor.mjs",
+    "package:verify": "node scripts/release/verify-editor-package.mjs",
+    "wasm:demo": "node scripts/build/build-wasm.mjs apps/demo/src/generated",
+    "demo:dev": "pnpm run build:protocol && pnpm run wasm:demo && vite --config apps/demo/vite.config.mjs",
+    "demo:build": "pnpm run build:protocol && pnpm run wasm:demo && tsc -p apps/demo/tsconfig.json --noEmit && vite build --config apps/demo/vite.config.mjs",
+    "test:browser": "node scripts/browser/run.mjs",
+    "benchmark:build": "pnpm run build:protocol && node scripts/build/build-wasm.mjs benchmarks/src/generated && tsc -p benchmarks/tsconfig.json && vite build --config benchmarks/vite.config.mjs",
+    "check:architecture": "node scripts/checks/check-editor-architecture.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test:ts": "pnpm run check:architecture && pnpm run build:protocol && tsc -p tsconfig.test.json && node scripts/checks/run-typescript-tests.mjs",
+    "benchmark": "node benchmarks/run.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "packages",
+    "outDir": "packages/editor/.cache/ts",
+    "sourceMap": true
+  },
+  "include": [
+    "packages/editor-protocol/src/**/*.ts",
+    "packages/editor/src/**/*.ts",
+    "packages/editor/tests/**/*.ts"
+  ]
+}

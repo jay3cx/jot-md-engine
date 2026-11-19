@@ -1,0 +1,39 @@
+{
+  "name": "@jot-md/editor-protocol",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "TypeScript wire contracts for the Jot Markdown editor protocol",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lin037/jot-md-engine.git",
+    "directory": "packages/editor-protocol"
+  },
+  "homepage": "https://github.com/lin037/jot-md-engine/tree/main/packages/editor-protocol#readme",
+  "bugs": {
+    "url": "https://github.com/lin037/jot-md-engine/issues"
+  },
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "src/index.ts",
+    "README.md"
+  ],
+  "types": "./dist/index.d.ts",
+  "module": "./dist/index.js",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build/clean-package-dist.mjs editor-protocol && tsc -p tsconfig.build.json"
+  }
+}

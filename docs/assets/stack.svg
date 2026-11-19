@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 36" role="img" aria-labelledby="title">
+  <title id="title">CodeMirror · Rust + Wasm · TypeScript · PreText</title>
+  <g fill="#17303c">
+    <rect width="124" height="36" rx="8"/>
+    <rect x="132" width="130" height="36" rx="8"/>
+    <rect x="270" width="120" height="36" rx="8"/>
+    <rect x="398" width="102" height="36" rx="8"/>
+  </g>
+  <g fill="none" stroke="#6de5cd" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m16 13-5 5 5 5m7-10 5 5-5 5"/>
+    <rect x="143" y="12" width="13" height="12" rx="2"/><path d="M146 9v3m7-3v3m-7 12v3m7-3v3m-4-12v6"/>
+    <path d="M280 14h13m-7 0v10m16-9h-5l-2 2 2 2h3l2 2-2 2h-5"/>
+    <path d="M409 13h17m-17 5h12m-12 5h15"/>
+  </g>
+  <g fill="#f4fdff" font-family="system-ui, sans-serif" font-size="13" font-weight="600">
+    <text x="35" y="23">CodeMirror</text><text x="164" y="23">Rust + Wasm</text>
+    <text x="308" y="23">TypeScript</text><text x="433" y="23">PreText</text>
+  </g>
+</svg>
