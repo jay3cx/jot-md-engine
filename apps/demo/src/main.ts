@@ -4,6 +4,7 @@ import { MarkdownEditor, createHeadingFoldPlugin,
 import { createLazyKaTeXRenderer } from "../../../packages/editor/src/components/math/lazy-katex.js";
 import { displayShortcut } from "../../../packages/editor/src/component/shortcut-settings.js";
 import { createMermaidPlugin } from "../../../packages/editor/src/plugins/mermaid.js";
+import { createToolbarPlugin } from "../../../packages/editor/src/plugins/toolbar.js";
 import logo from "../../../docs/assets/jot.svg?url";
 import { bindRuntimePanel } from "./runtime-panel.js";
 import { sample } from "./sample.js";
@@ -24,12 +25,13 @@ const theme = document.querySelector<HTMLButtonElement>("#theme")!;
 const codeWrap = document.querySelector<HTMLSelectElement>("#code-wrap")!;
 const mermaid = document.querySelector<HTMLInputElement>("#mermaid")!;
 const headingFold = document.querySelector<HTMLInputElement>("#heading-fold")!;
+const editorToolbar = document.querySelector<HTMLInputElement>("#editor-toolbar")!;
 const load = document.querySelector<HTMLButtonElement>("#load")!;
 const insert = document.querySelector<HTMLButtonElement>("#insert")!;
 const status = document.querySelector<HTMLElement>("#status")!;
 const shortcutsButton = document.querySelector<HTMLButtonElement>("#open-shortcuts")!;
 const fonts = {
-  sans: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+  sans: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
   serif: 'Georgia, "Songti SC", STSong, "Noto Serif CJK SC", SimSun, serif',
   mono: 'ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace',
 } as const;
@@ -58,12 +60,13 @@ const editor = new MarkdownEditor({
           clusterBkg: color("--surround"),
           clusterBorder: color("--rule-strong"),
           edgeLabelBackground: color("--paper"),
-          fontFamily: fonts.serif,
-          fontSize: "16px",
+          fontFamily: fonts.sans,
+          fontSize: "17px",
         };
       },
     }),
     createHeadingFoldPlugin(),
+    createToolbarPlugin({ enabled: editorToolbar.checked }),
   ],
   session: {
     endpoint: worker,
@@ -89,8 +92,8 @@ const editor = new MarkdownEditor({
       selection: "var(--selection)",
     },
     layout: {
-      fontFamily: fonts.serif,
-      fontSize: 16,
+      fontFamily: fonts.sans,
+      fontSize: 17,
       metrics: {
         tableToolbarHeight: 32,
       },
@@ -214,6 +217,9 @@ mermaid.addEventListener("change", () => {
 headingFold.addEventListener("change", () => {
   void editor.setPluginEnabled("heading-fold", headingFold.checked).catch(reportError);
 });
+editorToolbar.addEventListener("change", () => {
+  void editor.setPluginEnabled("toolbar", editorToolbar.checked).catch(reportError);
+});
 load.addEventListener("click", () => {
   try { clearError(); editor.setValue(sample(dataset.value)); } catch (error) { reportError(error); }
 });
@@ -238,6 +244,7 @@ window.addEventListener("beforeunload", () => {
 });
 void editor.open().then(() => {
   mode.disabled = font.disabled = codeWrap.disabled = load.disabled = insert.disabled = mermaid.disabled = headingFold.disabled = false;
+  editorToolbar.disabled = false;
   styleButton.disabled = performanceButton.disabled = commandsButton.disabled = false;
   shortcutsButton.disabled = false;
   updateStatus();

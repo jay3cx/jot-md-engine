@@ -27,10 +27,10 @@ try {
  await settle();
  assert.equal(await c.evaluate(`document.querySelector('#mode').value`),'live-preview','Demo defaults to live preview');
  assert.equal(await c.evaluate(`document.querySelector('#editor-root').dataset.jotEditorMode`),'live-preview','the selected default is the actual editor mode');
- assert.equal(await c.evaluate(`document.querySelector('#font').value`),'serif');
- assert.match(await c.evaluate(`getComputedStyle(document.querySelector('.cm-content')).fontFamily`),/Georgia.*Songti/);
+ assert.equal(await c.evaluate(`document.querySelector('#font').value`),'sans');
+ assert.match(await c.evaluate(`getComputedStyle(document.querySelector('.cm-content')).fontFamily`),/system-ui.*PingFang/);
  const headings=await c.evaluate(`[...document.querySelectorAll('.cm-line[data-jot-heading-level]')].slice(0,2).map(line=>parseFloat(getComputedStyle(line).fontSize))`);
- assert.deepEqual(headings,[21,19],'default H1 and H2 stay within five pixels of body text');
+ assert.deepEqual(headings,[28,22],'default H1 and H2 follow the Demo type scale');
  const initialSource=await source();
  assert(initialSource.includes('![布局示意图](./pretext-layout.svg)'),'fixture contains a real image');
  const mac=await c.evaluate('/Mac|iPhone|iPad/u.test(navigator.platform)');
@@ -82,6 +82,7 @@ try {
  await choose('#shortcut-platform',1);
  assert.equal(await shortcutLabel('format.heading-2'),'Ctrl-Alt-2');
  await c.evaluate(`document.querySelector('#shortcuts input[name="command.palette"]').value='Mod-Shift-Y';
+   document.querySelector('#shortcuts input[name="toolbar.open-table"]').value='F8';
    document.querySelector('#shortcuts form').requestSubmit();true`);
  assert.equal(await shortcutLabel('command.palette'),'Ctrl-Shift-y');
  await click('#shortcut-dialog .panel-header button');
@@ -103,6 +104,13 @@ try {
  await click('#open-shortcuts');
  assert.equal(await c.evaluate(`document.querySelector('#shortcut-platform').value`),'windows');
  assert.equal(await shortcutLabel('command.palette'),'Ctrl-Shift-y');
+ assert.equal(await shortcutLabel('toolbar.open-table'),'F8','unassigned toolbar command survives reload');
+ await click('#shortcut-dialog .panel-header button');
+ await c.evaluate("document.querySelector('.cm-content').focus()");
+ for(const type of ['keyDown','keyUp'])await c.command('Input.dispatchKeyEvent',{type,key:'F8',code:'F8',windowsVirtualKeyCode:119});
+ assert(await c.evaluate(`!!document.querySelector('.jot-editor-toolbar__picker--table:popover-open')`),'saved toolbar shortcut opens the table picker after reload');
+ for(const type of ['keyDown','keyUp'])await c.command('Input.dispatchKeyEvent',{type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+ await click('#open-shortcuts');
  await click('#shortcuts button[type="button"]');
  await screenshot('workbench-shortcuts');
  await click('#shortcut-dialog .panel-header button');
@@ -201,7 +209,7 @@ try {
   await waitForEvaluation(c,`document.querySelector('#status').textContent==='正文已确认'`,20000);
   assert.equal(await source(),initialSource,`${scenario.font}/${scenario.theme}: appearance changes preserve Markdown`);
   const presentation=await c.evaluate(`(()=>{const root=document.querySelector('#editor-root'),content=root.querySelector('.cm-content'),s=getComputedStyle(root),t=getComputedStyle(content),toolbar=getComputedStyle(document.querySelector('.toolbar label'));return{mode:root.dataset.jotEditorMode,font:t.fontFamily,size:parseFloat(t.fontSize),color:s.color,background:s.backgroundColor,muted:toolbar.color,surround:getComputedStyle(document.documentElement).backgroundColor,pageOverflow:document.documentElement.scrollWidth-innerWidth,scroller:root.querySelector('.cm-scroller').clientWidth,scrollWidth:root.querySelector('.cm-scroller').scrollWidth,wideNonCodeLines:[...content.querySelectorAll('.cm-line:not(.jot-live-preview-native-block--fenced-code)')].filter(line=>line.scrollWidth>line.clientWidth+1).map(line=>({text:line.textContent.slice(0,60),client:line.clientWidth,scroll:line.scrollWidth}))}})()`);
-  assert.equal(presentation.mode,'live-preview');assert.equal(presentation.size,16);
+  assert.equal(presentation.mode,'live-preview');assert.equal(presentation.size,17);
   assert(presentation.font.toLowerCase().includes(scenario.font==='sans'?'system':scenario.font==='serif'?'songti':'monospace'),`font option applies ${scenario.font}`);
   assert(presentation.pageOverflow<=1,'the page must not overflow horizontally');
   // Long code lines intentionally retain whitespace and can scroll horizontally.
