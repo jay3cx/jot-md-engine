@@ -1205,6 +1205,9 @@ export class LivePreviewController {
       this.#linkSelectionActive = update.transactions.some(transaction =>
         transaction.isUserEvent("input.format.link") || transaction.isUserEvent("select.format.link"));
     }
+    const hadSearchSelection = this.#searchSelectionActive;
+    const hadSearchSourceReveal = this.#searchSourceReveal;
+    const hadPendingSourceReveal = this.#pendingSourceReveal;
     const query = getSearchQuery(update.state);
     const previousQuery = getSearchQuery(update.startState);
     const queryChanged = !sameSearchPattern(query, previousQuery);
@@ -1223,7 +1226,11 @@ export class LivePreviewController {
       const selection = update.state.selection.main;
       let searchSelection = update.transactions.some(transaction => transaction.isUserEvent("select.search"));
       if (!searchSelection && query.valid && update.transactions.some(transaction => transaction.isUserEvent("input.replace"))) {
-        const match = query.getCursor(update.state, selection.from).next();
+        const match = query.getCursor(
+          update.state,
+          selection.from,
+          query.regexp ? undefined : selection.to,
+        ).next();
         searchSelection = !match.done && match.value.from === selection.from && match.value.to === selection.to;
       }
       this.#searchSelectionActive = query.valid && searchSelection;
@@ -1264,9 +1271,18 @@ export class LivePreviewController {
       this.#searchScrollTarget = undefined;
     }
     if (this.#searchScrollTarget === undefined) this.#finishSearchReveal?.();
-    if (panelClosed || queryChanged) this.#schedule(false);
+    const searchPresentationChanged =
+      hadSearchSelection !== this.#searchSelectionActive ||
+      hadSearchSourceReveal !== this.#searchSourceReveal ||
+      hadPendingSourceReveal !== this.#pendingSourceReveal;
+    // 只有搜索引起的预览/源码状态发生翻转（或面板关闭）时才重规划 Live Preview；
+    // 纯搜索词变动不改变语义块呈现，高亮由 searchHighlighter 与 LivePreviewSearchHighlights 负责。
+    if (panelClosed || searchPresentationChanged) this.#schedule(false);
     if (update.focusChanged && this.#options.pluginRegistry?.hasEnabledCodeBlocks() === true) this.#schedule(false);
     if (update.geometryChanged || update.viewportChanged) this.#onSearchGeometryChanged();
+    if (this.#enabled && this.#opened && !this.#disposed && update.geometryChanged && !update.docChanged) {
+      this.#checkViewportCoverageAfterMeasure(update.view);
+    }
     if (update.docChanged) {
       this.#pendingTableRowInput = undefined;
       const before = update.startState.selection.main;
