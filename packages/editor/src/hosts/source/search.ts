@@ -1,5 +1,5 @@
 import {
-  closeSearchPanel,
+  closeSearchPanel as codeMirrorCloseSearchPanel,
   findNext as codeMirrorFindNext,
   findPrevious as codeMirrorFindPrevious,
   getSearchQuery,
@@ -20,6 +20,7 @@ import {
   findPreviousMatchSync,
   isKnownSearchMiss,
   scheduleIncrementalSearch,
+  type SearchMatchRange,
 } from "../shared/search-engine.js";
 import { sameSearchPattern } from "../shared/search-pattern.js";
 import { sourceSnapshot } from "../shared/source-snapshot.js";
@@ -43,6 +44,13 @@ export interface EditorSearchQuery {
 
 const activeSearchPanels = new WeakMap<EditorView, SourceSearchPanel>();
 
+type SearchTextField = "search" | "replace";
+
+function editSearchQuery(query: SearchQuery, change: Partial<EditorSearchQuery>): SearchQuery {
+  const { test, ...config } = query;
+  return new SearchQuery({ ...config, ...change, ...(test === undefined ? {} : { test }) });
+}
+
 export function sourceSearch(): Extension {
   return [search({ createPanel: (view) => new SourceSearchPanel(view) }), searchTheme];
 }
@@ -53,8 +61,7 @@ export function updateSourceSearch(view: EditorView, query: EditorSearchQuery): 
 
 /** 面板输入处于大文档防抖窗口时，返回面板当前草稿查询以保持公开读取一致。 */
 export function getSourceSearchQuery(view: EditorView): SearchQuery {
-  const panel = activeSearchPanels.get(view);
-  return panel?.hasPendingQuery() ? panel.currentDraftQuery() : getSearchQuery(view.state);
+  return activeSearchPanels.get(view)?.currentDraftQuery() ?? getSearchQuery(view.state);
 }
 
 /** 在导航、替换等外部入口执行前，同步提交面板尚未落入状态的防抖输入。 */
@@ -95,6 +102,28 @@ function skipKnownMiss(command: Command): Command {
   });
 }
 
+function closeSearchPanel(view: EditorView): boolean {
+  flushPendingSearchQuery(view);
+  return codeMirrorCloseSearchPanel(view);
+}
+
+function selectSearchMatch(view: EditorView, match: SearchMatchRange): void {
+  const state = view.state;
+  const line = state.doc.lineAt(match.from);
+  const from = Math.max(line.from, match.from - 30);
+  const to = Math.min(state.doc.lineAt(match.to).to, match.to + 30, match.from + 90);
+  const context = state.sliceDoc(from, to);
+  const selection = EditorSelection.single(match.from, match.to);
+  view.dispatch({
+    selection,
+    effects: [
+      EditorView.announce.of(`${state.phrase("current match")}. ${context} ${state.phrase("on line")} ${line.number}.`),
+      EditorView.scrollIntoView(selection.main),
+    ],
+    userEvent: "select.search",
+  });
+}
+
 function fastNavigationCommand(direction: "next" | "previous", fallback: Command): Command {
   return validSearchCommand((view) => {
     const query = getSearchQuery(view.state);
@@ -110,12 +139,7 @@ function fastNavigationCommand(direction: "next" | "previous", fallback: Command
       ? findNextMatchSync(source, view.state, query, main.to, main.to)
       : findPreviousMatchSync(source, view.state, query, main.from, main.from);
     if (match === undefined) return false;
-    const selection = EditorSelection.single(match.from, match.to);
-    view.dispatch({
-      selection,
-      effects: EditorView.scrollIntoView(selection.main),
-      userEvent: "select.search",
-    });
+    selectSearchMatch(view, match);
     const input = view.dom?.querySelector<HTMLInputElement>(".cm-search input[main-field]");
     if (input != null && input === view.dom.ownerDocument.activeElement) input.select();
     return true;
@@ -160,11 +184,11 @@ class SourceSearchPanel implements Panel {
   readonly #status: HTMLElement;
   readonly #replaceControls: (HTMLInputElement | HTMLButtonElement)[] = [];
   #composing = false;
-  #compositionTimer: ReturnType<typeof setTimeout> | undefined;
+  #composition: { field: SearchTextField; timer: ReturnType<typeof setTimeout> } | undefined;
   #queryTimer: ReturnType<typeof setTimeout> | undefined;
   #searchTimer: ReturnType<typeof setTimeout> | undefined;
   #cancelScan: (() => void) | undefined;
-  #pendingPattern: SearchQuery | undefined;
+  #pendingQuery: SearchQuery | undefined;
   #flushingQuery = false;
   #destroyed = false;
   #cursorAffinity: {
@@ -209,28 +233,29 @@ class SourceSearchPanel implements Panel {
     this.dom.setAttribute("aria-label", "搜索与替换");
     this.dom.addEventListener("focusin", this.#onPanelFocus);
     view.contentDOM.addEventListener("focusin", this.#onEditorFocus);
-    const field = (name: string, label: string) => {
+    const field = (name: SearchTextField, label: string) => {
       const input = document.createElement("input");
       input.name = name;
       input.className = "cm-textfield jot-search-input";
       input.placeholder = label;
       input.setAttribute("aria-label", label);
       input.addEventListener("input", () => {
-        if (!this.#composing && this.#compositionTimer === undefined) this.#commit();
+        if (!this.#composing && this.#composition === undefined) this.#commit({ [name]: input.value });
       });
       input.addEventListener("compositionstart", () => {
+        if (this.#composition !== undefined) this.#pendingQuery = this.currentDraftQuery();
+        this.#clearComposition();
+        this.#clearQueryTimer();
+        this.#cancelSearch();
         this.#composing = true;
-        this.#cancelPending();
-        if (this.#compositionTimer !== undefined) clearTimeout(this.#compositionTimer);
-        this.#compositionTimer = undefined;
       });
       input.addEventListener("compositionend", () => {
         this.#composing = false;
         // Some platforms emit their final input after compositionend.
-        this.#compositionTimer = setTimeout(() => {
-          this.#compositionTimer = undefined;
-          this.#commit();
-        }, 0);
+        this.#composition = { field: name, timer: setTimeout(() => {
+          this.#composition = undefined;
+          this.#commit({ [name]: input.value });
+        }, 0) };
       });
       return input;
     };
@@ -248,13 +273,13 @@ class SourceSearchPanel implements Panel {
       element.addEventListener("click", () => this.#run(run, name !== "close"));
       return element;
     };
-    const checkbox = (name: string, text: string) => {
+    const checkbox = (name: string, text: string, option: "caseSensitive" | "wholeWord" | "regexp") => {
       const label = document.createElement("label");
       const input = document.createElement("input");
       input.type = "checkbox";
       input.name = name;
       input.addEventListener("change", () => {
-        if (!this.#composing && this.#compositionTimer === undefined) this.#commit(true);
+        if (!this.#composing && this.#composition === undefined) this.#commit({ [option]: input.checked }, true);
       });
       label.append(input, document.createTextNode(text));
       options.append(label);
@@ -270,9 +295,9 @@ class SourceSearchPanel implements Panel {
       button("close", "关闭", () => closeSearchPanel(view), "×"));
     const options = document.createElement("div");
     options.className = "jot-search-options";
-    this.#case = checkbox("case", "区分大小写");
-    this.#word = checkbox("word", "全词");
-    this.#regexp = checkbox("re", "正则表达式");
+    this.#case = checkbox("case", "区分大小写", "caseSensitive");
+    this.#word = checkbox("word", "全词", "wholeWord");
+    this.#regexp = checkbox("re", "正则表达式", "regexp");
     this.#status = document.createElement("span");
     this.#status.className = "jot-search-status";
     this.#status.setAttribute("role", "status");
@@ -291,13 +316,6 @@ class SourceSearchPanel implements Panel {
       // receive the same Enter/Backspace/Arrow event after it bubbles out.
       event.stopPropagation();
       if (this.#composing || event.isComposing || event.keyCode === 229) return;
-      if (["Enter", "F3", "Escape"].includes(event.key) || event.metaKey || event.ctrlKey) {
-        if (event.key === "Escape") this.#cancelPending();
-        else {
-          this.#cancelSearch();
-          this.#flushQuery();
-        }
-      }
       if (runScopeHandlers(view, event, "search-panel")) {
         event.preventDefault();
       } else if (event.key === "Escape") {
@@ -322,28 +340,23 @@ class SourceSearchPanel implements Panel {
     this.#destroyed = true;
     if (activeSearchPanels.get(this.#view) === this) activeSearchPanels.delete(this.#view);
     this.#cancelPending();
-    if (this.#compositionTimer !== undefined) clearTimeout(this.#compositionTimer);
     this.dom.removeEventListener("focusin", this.#onPanelFocus);
     this.#view.contentDOM.removeEventListener("focusin", this.#onEditorFocus);
     queueMicrotask(() => this.#restoreCursorAffinity());
   }
 
-  hasPendingQuery(): boolean {
-    return this.#queryTimer !== undefined || (!this.#composing && this.#compositionTimer !== undefined);
-  }
-
   currentDraftQuery(): SearchQuery {
-    return this.#draftQuery();
+    const query = this.#pendingQuery ?? getSearchQuery(this.#view.state);
+    const field = this.#composition?.field;
+    if (field === undefined) return query;
+    const input = field === "search" ? this.#search : this.#replace;
+    return editSearchQuery(query, { [field]: input.value });
   }
 
   flushPendingQuery(): void {
-    if (this.#destroyed || !this.hasPendingQuery()) return;
-    if (this.#compositionTimer !== undefined) {
-      clearTimeout(this.#compositionTimer);
-      this.#compositionTimer = undefined;
-    }
+    if (this.#destroyed) return;
     this.#cancelSearch();
-    this.#flushQuery();
+    if (this.#pendingQuery !== undefined || this.#composition !== undefined) this.#flushQuery();
   }
 
   update(update: ViewUpdate): void {
@@ -363,29 +376,15 @@ class SourceSearchPanel implements Panel {
 
   #sync(syncInputs: boolean): void {
     const query = getSearchQuery(this.#view.state);
-    if (syncInputs && !this.#composing && this.#compositionTimer === undefined && this.#queryTimer === undefined) {
+    if (syncInputs && !this.#composing && this.#composition === undefined && this.#pendingQuery === undefined) {
       if (this.#search.value !== query.search) this.#search.value = query.search;
       if (this.#replace.value !== query.replace) this.#replace.value = query.replace;
       this.#case.checked = query.caseSensitive;
       this.#regexp.checked = query.regexp;
       this.#word.checked = query.wholeWord;
-      this.#pendingPattern = undefined;
     }
     for (const control of this.#replaceControls) control.disabled = this.#view.state.readOnly;
-    const activeQuery = this.#queryTimer !== undefined ? this.#draftQuery() : query;
-    this.#applyValidationState(activeQuery);
-  }
-
-  #draftQuery(): SearchQuery {
-    const previous = getSearchQuery(this.#view.state);
-    return new SearchQuery({
-      search: this.#search.value,
-      replace: this.#replace.value,
-      caseSensitive: this.#case.checked,
-      wholeWord: this.#word.checked,
-      regexp: this.#regexp.checked,
-      literal: previous.literal,
-    });
+    this.#applyValidationState(this.currentDraftQuery());
   }
 
   #applyValidationState(query: SearchQuery): void {
@@ -397,7 +396,7 @@ class SourceSearchPanel implements Panel {
   #dispatchQuery(query: SearchQuery): void {
     if (this.#destroyed) return;
     const current = getSearchQuery(this.#view.state);
-    if (current.eq(query)) return;
+    if (sameSearchPattern(current, query) && current.replace === query.replace) return;
     this.#flushingQuery = true;
     try {
       this.#view.dispatch({ effects: setSearchQuery.of(query) });
@@ -407,23 +406,24 @@ class SourceSearchPanel implements Panel {
   }
 
   #flushQuery(): SearchQuery {
-    if (this.#queryTimer !== undefined) {
-      clearTimeout(this.#queryTimer);
-      this.#queryTimer = undefined;
-    }
-    this.#pendingPattern = undefined;
-    const draft = this.#draftQuery();
+    const draft = this.currentDraftQuery();
+    this.#clearQueryTimer();
+    this.#clearComposition();
+    this.#pendingQuery = undefined;
     this.#dispatchQuery(draft);
     return getSearchQuery(this.#view.state);
   }
 
-  #commit(immediate = false): void {
-    const draft = this.#draftQuery();
-    const baseline = this.#pendingPattern ?? getSearchQuery(this.#view.state);
+  #commit(change: Partial<EditorSearchQuery>, immediate = false): void {
+    // A single-line input can omit line breaks from an API value. Merge
+    // only the field changed by the input event into the canonical query.
+    const baseline = this.#pendingQuery ?? getSearchQuery(this.#view.state);
+    const draft = editSearchQuery(baseline, change);
     const patternChanged = !sameSearchPattern(baseline, draft);
+    this.#pendingQuery = draft;
     if (!patternChanged) {
       // 仅修改替换框时，不打断正在等待防抖的搜索词。
-      if (this.#queryTimer === undefined) this.#dispatchQuery(draft);
+      if (this.#queryTimer === undefined) this.#flushQuery();
       return;
     }
 
@@ -437,7 +437,6 @@ class SourceSearchPanel implements Panel {
 
     if (shouldDebounceQuery) {
       if (this.#queryTimer !== undefined) clearTimeout(this.#queryTimer);
-      this.#pendingPattern = draft;
       const delay = docLength >= VERY_LARGE_DOC_UNITS
         ? LARGE_DOC_QUERY_DEBOUNCE_MS
         : MEDIUM_DOC_QUERY_DEBOUNCE_MS;
@@ -489,11 +488,7 @@ class SourceSearchPanel implements Panel {
         return;
       }
       this.#status.textContent = "";
-      this.#view.dispatch({
-        selection: EditorSelection.single(match.from, match.to),
-        effects: EditorView.scrollIntoView(EditorSelection.range(match.from, match.to)),
-        userEvent: "select.search",
-      });
+      selectSearchMatch(this.#view, match);
     });
   }
 
@@ -504,17 +499,25 @@ class SourceSearchPanel implements Panel {
     this.#cancelScan = undefined;
   }
 
-  #cancelPending(): void {
+  #clearQueryTimer(): void {
     if (this.#queryTimer !== undefined) clearTimeout(this.#queryTimer);
     this.#queryTimer = undefined;
-    this.#pendingPattern = undefined;
+  }
+
+  #clearComposition(): void {
+    if (this.#composition !== undefined) clearTimeout(this.#composition.timer);
+    this.#composition = undefined;
+  }
+
+  #cancelPending(): void {
+    this.#clearQueryTimer();
+    this.#clearComposition();
+    this.#pendingQuery = undefined;
     this.#cancelSearch();
   }
 
   #run(command: () => boolean, requiresQuery = true): void {
-    this.#cancelSearch();
-    if (requiresQuery) this.#flushQuery();
-    else this.#cancelPending();
+    if (requiresQuery) this.flushPendingQuery();
     // CodeMirror's command fallback opens the panel for an invalid query. In
     // an already open form, retain the user's invalid input and focus so they
     // can correct it, instead of adopting the editor's previous selection.

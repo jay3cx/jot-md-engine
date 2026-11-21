@@ -168,6 +168,80 @@ export async function runKeyboardScenarios({ c, load, settle, confirmed, key, sc
   await press('Escape');
   results.push({ case: 'keyboard-search-debounced-external-replace-all', ...debouncedReplace });
 
+  const replaceSource = 'replace needle here';
+  const multiline = 'left\nright';
+  await c.evaluate(`editor.commands.configureShortcuts({'search.replace-all':'F7'})`);
+  try {
+    for (const route of ['api', 'button', 'shortcut', 'edit-search', 'edit-replacement']) {
+      await fresh(replaceSource);
+      await c.evaluate(`(async()=>{
+        await editor.openSearch({replace:true});
+        editor.setSearchQuery({search:${JSON.stringify(route === 'edit-search' ? 'missing' : 'needle')},
+          replace:${JSON.stringify(multiline)},literal:true});
+      })()`);
+      if (route === 'api') {
+        assert(await c.evaluate('editor.replaceAll()'));
+      } else if (route === 'shortcut') {
+        await press('F7');
+      } else {
+        await c.evaluate(`(()=>{
+          const route=${JSON.stringify(route)};
+          if (route==='edit-search'||route==='edit-replacement') {
+            const field=document.querySelector(route==='edit-search'
+              ? '.cm-search input[name=search]' : '.cm-search input[name=replace]');
+            field.value=route==='edit-search'?'needle':'leftright';
+            field.dispatchEvent(new Event('input',{bubbles:true}));
+          }
+          document.querySelector('.cm-search button[name=replaceAll]').click();
+        })()`);
+      }
+      await confirmed();
+      const replacement = route === 'edit-replacement' ? 'leftright' : multiline;
+      assert.equal(await c.evaluate('editor.confirmedValue'), `replace ${replacement} here`, route + ' uses the intended replacement');
+    }
+  } finally {
+    await c.evaluate('editor.commands.resetShortcuts()');
+  }
+  results.push({ case: 'keyboard-search-api-replacement-parity' });
+
+  const searchTail = debouncedReplaceDoc + 'target needle';
+  for (const route of ['button', 'escape', 'api']) {
+    await fresh(searchTail);
+    const closed = await c.evaluate(`(async()=>{
+      await editor.openSearch();editor.setSearchQuery({search:'red'});
+      const search=document.querySelector('.cm-search input[name=search]');
+      search.value='blue';search.dispatchEvent(new Event('input',{bubbles:true}));
+      const route=${JSON.stringify(route)};
+      if(route==='button')document.querySelector('.cm-search button[name=close]').click();
+      else if(route==='escape')search.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+      else editor.input.closeSearch();
+      return !document.querySelector('.cm-search');
+    })()`);
+    await settle();
+    assert(closed, route + ' closes the search panel');
+    assert.equal(await c.evaluate('editor.searchQuery.search'), 'blue', route + ' preserves the last input immediately');
+    assert.equal(await c.evaluate('view.state.selection.main.head'), 0, route + ' cancels pending automatic navigation');
+    await c.evaluate('editor.openSearch()');
+    assert.equal(await c.evaluate(`document.querySelector('.cm-search input[name=search]').value`), 'blue');
+  }
+  results.push({ case: 'keyboard-search-close-retains-draft' });
+
+  await fresh(searchTail);
+  const announcement = await c.evaluate(`(async()=>{
+    await editor.openSearch();
+    editor.setSearchQuery({search:'needle'});
+    const found=editor.findNext();
+    const {from,to}=view.state.selection.main;
+    return {found,selected:view.state.sliceDoc(from,to),line:view.state.doc.lineAt(from).number,
+      text:view.dom.querySelector('.cm-announced[aria-live=polite]').textContent};
+  })()`);
+  assert(announcement.found);
+  assert.equal(announcement.selected, 'needle');
+  assert.equal(announcement.line, 4002);
+  assert.match(announcement.text, /target needle on line 4002/u);
+  await press('Escape');
+  results.push({ case: 'keyboard-large-search-announcement', ...announcement });
+
   await fresh('keyboard text', 0, 8);
   await press('p', { modifier: editorMod, shift: true }); await settle();
   assert(await c.evaluate(`document.activeElement instanceof HTMLInputElement && !view.contentDOM.contains(document.activeElement)`), 'command palette opens and owns keyboard focus');

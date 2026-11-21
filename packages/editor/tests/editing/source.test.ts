@@ -217,6 +217,17 @@ async function search_engine_matches_unicode_boundaries_and_prunes_misses(): Pro
   equal(prevOverlap?.from, aaaStart + 1);
   equal(prevOverlap?.to, aaaStart + 3);
 
+  // The extra scan overlap cannot extend the navigation wrap boundary.
+  const expandedFrom = 65_532;
+  const expandedSource = "x".repeat(expandedFrom) + "株式会社" + "x".repeat(40);
+  const expandedState = EditorState.create({ doc: expandedSource });
+  const expandedQuery = new SearchQuery({ search: "㍿" });
+  const insideMatch = expandedFrom + 2;
+  equal(findNextMatchSync(expandedSource, expandedState, expandedQuery, insideMatch, insideMatch), undefined);
+  equal(findPreviousMatchSync(expandedSource, expandedState, expandedQuery, insideMatch, insideMatch), undefined);
+  equal(isKnownSearchMiss(expandedState.doc, expandedQuery), false);
+  equal(findNextMatchSync(expandedSource, expandedState, expandedQuery, 0, 0)?.from, expandedFrom);
+
   // 零匹配单调性：fff 无匹配后，ffff / ffffffffff / wholeWord / caseSensitive 均 O(1) 剪枝。
   const fff = new SearchQuery({ search: "fff" });
   equal(isKnownSearchMiss(state.doc, fff), false);

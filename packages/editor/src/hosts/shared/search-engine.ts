@@ -180,9 +180,12 @@ export function findNextMatchSync(
   if (forward !== undefined && (forward.from !== curFrom || forward.to !== curTo)) {
     return forward;
   }
-  const wrapLimit = Math.min(length, curFrom + Math.max(unquoteSearch(query).length, overlap));
-  const wrapped = scanForwardRangeSync(source, state, query, 0, wrapLimit, overlap);
-  if (wrapped !== undefined && (wrapped.from !== curFrom || wrapped.to !== curTo)) {
+  const wrapLimit = Math.min(length, curFrom + unquoteSearch(query).length);
+  // Overlap can disprove a cached miss across the seam, but navigation keeps
+  // CodeMirror's original range, including when normalization expands a match.
+  const scanLimit = Math.min(length, Math.max(wrapLimit, curFrom + overlap));
+  const wrapped = scanForwardRangeSync(source, state, query, 0, scanLimit, overlap);
+  if (wrapped !== undefined && wrapped.to <= wrapLimit && (wrapped.from !== curFrom || wrapped.to !== curTo)) {
     return wrapped;
   }
   if (forward === undefined && wrapped === undefined) {
@@ -227,9 +230,10 @@ export function findPreviousMatchSync(
   if (backward !== undefined && (backward.from !== curFrom || backward.to !== curTo)) {
     return backward;
   }
-  const wrapStart = Math.max(0, curTo - Math.max(unquoteSearch(query).length, overlap));
-  const wrapped = scanBackwardRangeSync(source, state, query, wrapStart, length, overlap);
-  if (wrapped !== undefined && (wrapped.from !== curFrom || wrapped.to !== curTo)) {
+  const wrapStart = Math.max(0, curTo - unquoteSearch(query).length);
+  const scanStart = Math.max(0, Math.min(wrapStart, curTo - overlap));
+  const wrapped = scanBackwardRangeSync(source, state, query, scanStart, length, overlap);
+  if (wrapped !== undefined && wrapped.from >= wrapStart && (wrapped.from !== curFrom || wrapped.to !== curTo)) {
     return wrapped;
   }
   if (backward === undefined && wrapped === undefined) {
