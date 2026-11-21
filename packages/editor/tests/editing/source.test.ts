@@ -14,6 +14,7 @@ import {
   isKnownSearchMiss,
   recordSearchMiss,
   scheduleIncrementalSearch,
+  selectionMatchesSearchQuery,
 } from "../../src/hosts/shared/search-engine.js";
 import { SearchQuery } from "@codemirror/search";
 import type { EditorView } from "@codemirror/view";
@@ -300,6 +301,27 @@ async function search_engine_preserves_regexp_and_whole_word_across_chunk_bounda
   const standalonePos = standaloneDoc.lastIndexOf("cat");
   equal(findNextMatchSync(standaloneDoc, standaloneState, wholeCat, 0, 0)?.from, standalonePos);
   equal((await awaitIncrementalSearch(standaloneView, wholeCat, 0))?.from, standalonePos);
+
+  // 选区命中判定对全词左右边界都不能误判，且不依赖扫描全文档。
+  const rightWordState = EditorState.create({ doc: "catfish" });
+  const leftWordState = EditorState.create({ doc: "xcat " });
+  const exactWordState = EditorState.create({ doc: " cat " });
+  equal(selectionMatchesSearchQuery(rightWordState, wholeCat, 0, 3), false);
+  equal(selectionMatchesSearchQuery(leftWordState, wholeCat, 1, 4), false);
+  equal(selectionMatchesSearchQuery(exactWordState, wholeCat, 1, 4), true);
+  const regexWord = new SearchQuery({ search: "\\bcat\\b", regexp: true });
+  equal(selectionMatchesSearchQuery(leftWordState, regexWord, 1, 4), false);
+  equal(selectionMatchesSearchQuery(exactWordState, regexWord, 1, 4), true);
+
+  // 超长 ASCII 搜索词（> 64KB）不能触发 V8 正则长度上限异常，且应精确匹配。
+  const hugeNeedle = `a${"b".repeat(79_998)}c`;
+  const hugeDoc = `${"z".repeat(70_000)}${hugeNeedle}${"z".repeat(70_000)}`;
+  const hugeState = EditorState.create({ doc: hugeDoc, extensions: sourceSearch() });
+  const hugeView = { state: hugeState } as unknown as EditorView;
+  const hugeQuery = new SearchQuery({ search: hugeNeedle });
+  equal(findNextMatchSync(hugeDoc, hugeState, hugeQuery, 0, 0)?.from, 70_000);
+  equal(findPreviousMatchSync(hugeDoc, hugeState, hugeQuery, hugeDoc.length, hugeDoc.length)?.from, 70_000);
+  equal((await awaitIncrementalSearch(hugeView, hugeQuery, 0))?.from, 70_000);
 }
 
 function apply(source: string, edits: readonly { readonly range: { readonly from: number; readonly to: number }; readonly insert: string }[]): string {

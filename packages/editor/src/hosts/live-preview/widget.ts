@@ -521,7 +521,7 @@ function sameRenderValue(left: RenderValue, right: RenderValue): boolean {
     case "string":
     case "number":
     case "boolean":
-      return left.value === (right as typeof left).value;
+      return Object.is(left.value, (right as typeof left).value);
     case "range": {
       const other = (right as typeof left).value;
       return left.value.from === other.from && left.value.to === other.to;

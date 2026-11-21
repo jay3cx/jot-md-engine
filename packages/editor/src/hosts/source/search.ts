@@ -329,7 +329,7 @@ class SourceSearchPanel implements Panel {
   }
 
   hasPendingQuery(): boolean {
-    return this.#queryTimer !== undefined;
+    return this.#queryTimer !== undefined || (!this.#composing && this.#compositionTimer !== undefined);
   }
 
   currentDraftQuery(): SearchQuery {
@@ -337,7 +337,11 @@ class SourceSearchPanel implements Panel {
   }
 
   flushPendingQuery(): void {
-    if (this.#destroyed || this.#queryTimer === undefined) return;
+    if (this.#destroyed || !this.hasPendingQuery()) return;
+    if (this.#compositionTimer !== undefined) {
+      clearTimeout(this.#compositionTimer);
+      this.#compositionTimer = undefined;
+    }
     this.#cancelSearch();
     this.#flushQuery();
   }

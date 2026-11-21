@@ -3,7 +3,11 @@ import type { Text } from "@codemirror/state";
 import { getSearchQuery, searchPanelOpen } from "@codemirror/search";
 import { readDomSourceRange, type DomSourceRange } from "../../components/common/dom-position.js";
 import { logicalScrollLeft, setLogicalScrollLeft } from "../../components/common/render-utils.js";
-import { chunkMayContainMatch, isKnownSearchMiss } from "../shared/search-engine.js";
+import {
+  chunkMayContainMatch,
+  isKnownSearchMiss,
+  selectionMatchesSearchQuery,
+} from "../shared/search-engine.js";
 import { sourceSnapshot } from "../shared/source-snapshot.js";
 import { nearestRevealDelta } from "./viewport.js";
 
@@ -245,10 +249,8 @@ export class LivePreviewSearchHighlights {
     };
     // Background paint is bounded, but the selected hit must remain visible
     // even in a very long physical line or beyond the first 1,000 matches.
-    const selectedHit = selection.empty || !this.#isSearching() ? undefined
-      : query.getCursor(state, selection.from, query.regexp ? undefined : selection.to).next();
-    const paintedCurrent = selectedHit !== undefined && !selectedHit.done &&
-      selectedHit.value.from === selection.from && selectedHit.value.to === selection.to;
+    const paintedCurrent = !selection.empty && this.#isSearching() &&
+      selectionMatchesSearchQuery(state, query, selection.from, selection.to);
     if (paintedCurrent) paintMatch(selection, true);
     const source = sourceSnapshot(this.#view);
     let remaining = MAX_SOURCE_UNITS, hits = 0;

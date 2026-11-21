@@ -1,4 +1,5 @@
 import { sourceSnapshot } from "../shared/source-snapshot.js";
+import { selectionMatchesSearchQuery } from "../shared/search-engine.js";
 import type { ProjectionSlice, RenderNode, Revision, Utf16Offset } from "@jot-md/editor-protocol";
 import { countColumn, EditorSelection, Text, Transaction, type ChangeSpec, type EditorState, type Extension, type TransactionSpec } from "@codemirror/state";
 import { deleteMarkupBackward, insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
@@ -1226,12 +1227,7 @@ export class LivePreviewController {
       const selection = update.state.selection.main;
       let searchSelection = update.transactions.some(transaction => transaction.isUserEvent("select.search"));
       if (!searchSelection && query.valid && update.transactions.some(transaction => transaction.isUserEvent("input.replace"))) {
-        const match = query.getCursor(
-          update.state,
-          selection.from,
-          query.regexp ? undefined : selection.to,
-        ).next();
-        searchSelection = !match.done && match.value.from === selection.from && match.value.to === selection.to;
+        searchSelection = selectionMatchesSearchQuery(update.state, query, selection.from, selection.to);
       }
       this.#searchSelectionActive = query.valid && searchSelection;
       if (this.#searchSelectionActive) {

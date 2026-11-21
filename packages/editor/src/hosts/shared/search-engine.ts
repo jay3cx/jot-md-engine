@@ -3,8 +3,9 @@ import type { EditorState, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { sourceSnapshot } from "./source-snapshot.js";
 
-/** 大文档搜索热路径的共享常量：单次分块大小与单时间片预算。 */
+/** 大文档搜索热路径的共享常量：单次分块大小、正则预筛上限与单时间片预算。 */
 const SEARCH_CHUNK_UNITS = 65_536;
+const MAX_ASCII_PREFILTER_REGEX_LENGTH = 1_024;
 const TIME_SLICE_BUDGET_MS = 4;
 const MAX_CACHED_MISSES = 16;
 
@@ -110,6 +111,34 @@ export function chunkMayContainMatch(
     return compiled.asciiRegex.test(normalized);
   }
   return normalized.toLowerCase().includes(compiled.normNeedle);
+}
+
+/**
+ * 精确判断选区 `[from, to]` 是否命中当前搜索条件。
+ *
+ * - 对 `wholeWord` 左右各多提供 2 个 UTF-16 码元上下文，既避免截断导致把词内子串误判为全词，
+ *   又把扫描严格限制在 `O(to - from)` 而不是扫描整篇文档。
+ * - 命中零匹配缓存时直接返回 `false`。
+ */
+export function selectionMatchesSearchQuery(
+  state: EditorState,
+  query: SearchQuery,
+  from: number,
+  to: number,
+): boolean {
+  if (!query.valid || isKnownSearchMiss(state.doc, query)) return false;
+  if (query.regexp) {
+    const match = query.getCursor(state, from).next();
+    return !match.done && match.value.from === from && match.value.to === to;
+  }
+  const lo = query.wholeWord ? Math.max(0, from - 2) : from;
+  const hi = query.wholeWord ? Math.min(state.doc.length, to + 2) : to;
+  const cursor = query.getCursor(state, lo, hi);
+  for (;;) {
+    const match = advanceCursor(cursor, true);
+    if (match.done || match.value.from > from) return false;
+    if (match.value.from === from && match.value.to === to) return true;
+  }
 }
 
 /** 同步查找从 `curTo` 开始的下一个匹配（含回绕到文档头部），供命令与单测使用。 */
@@ -263,13 +292,14 @@ export function scheduleIncrementalSearch(
       return cancel;
     }
     const overlap = compiled.overlap;
+    const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
     let position = 0;
     const prefilterStep = (): void => {
       timer = undefined;
       if (cancelled || view.state.doc !== doc) return;
       const deadline = now() + TIME_SLICE_BUDGET_MS;
       while (position < length) {
-        const chunkEnd = Math.min(length, position + SEARCH_CHUNK_UNITS);
+        const chunkEnd = Math.min(length, position + stepSize);
         const sliceEnd = Math.min(length, chunkEnd + overlap);
         if (chunkMayContainMatch(source, position, sliceEnd, query)) {
           runExactUnchunked();
@@ -289,6 +319,7 @@ export function scheduleIncrementalSearch(
   }
 
   const overlap = chunkOverlap(query);
+  const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
   // 扫描阶段：0 表示 [origin, length]，1 表示回绕区间 [0, origin]。
   // 为了让零匹配缓存严格覆盖跨过 origin 接缝的匹配，回绕结束边界多留一个 overlap。
   const segments: Array<{ readonly from: number; readonly to: number; readonly acceptLimit: number }> = [
@@ -316,7 +347,7 @@ export function scheduleIncrementalSearch(
         position = segmentIndex < segments.length ? segments[segmentIndex]!.from : length;
         continue;
       }
-      const chunkEnd = Math.min(segment.to, position + SEARCH_CHUNK_UNITS);
+      const chunkEnd = Math.min(segment.to, position + stepSize);
       const sliceEnd = Math.min(segment.to, chunkEnd + overlap);
       if (!compiled.eligible || chunkMayContainMatch(source, position, sliceEnd, query)) {
         const cursor = query.getCursor(state, position, sliceEnd);
@@ -353,9 +384,10 @@ function rangeMayContainSubstringSync(
   const compiled = compilePrefilter(query);
   if (!compiled.eligible) return true;
   const overlap = compiled.overlap;
+  const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
   let position = from;
   while (position < to) {
-    const end = Math.min(to, position + SEARCH_CHUNK_UNITS);
+    const end = Math.min(to, position + stepSize);
     const sliceEnd = Math.min(to, end + overlap);
     if (chunkMayContainMatch(source, position, sliceEnd, query)) return true;
     position = end;
@@ -401,9 +433,10 @@ function scanForwardRangeSync(
     const match = advanceCursor(query.getCursor(state, from, to), !query.regexp);
     return match.done ? undefined : { from: match.value.from, to: match.value.to };
   }
+  const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
   let position = from;
   while (position < to) {
-    const end = Math.min(to, position + SEARCH_CHUNK_UNITS);
+    const end = Math.min(to, position + stepSize);
     const sliceEnd = Math.min(to, end + overlap);
     if (chunkMayContainMatch(source, position, sliceEnd, query)) {
       const match = advanceCursor(query.getCursor(state, position, sliceEnd), true);
@@ -423,9 +456,10 @@ function scanBackwardRangeSync(
   overlap: number,
 ): SearchMatchRange | undefined {
   const compiled = compilePrefilter(query);
+  const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
   let end = to;
   while (end > from) {
-    const start = Math.max(from, end - SEARCH_CHUNK_UNITS);
+    const start = Math.max(from, end - stepSize);
     const sliceStart = Math.max(from, start - overlap);
     if (!compiled.eligible || chunkMayContainMatch(source, sliceStart, end, query)) {
       const cursor = query.getCursor(state, sliceStart, end);
@@ -453,7 +487,11 @@ function compilePrefilter(query: SearchQuery): CompiledPrefilter {
     const hasCombining = COMBINING_MARK_PATTERN.test(normalized);
     const hasSigma = !query.caseSensitive && GREEK_SIGMA_PATTERN.test(normalized);
     const eligible = normNeedle.length > 0 && !hasCombining && !hasSigma;
-    const asciiRegex = eligible && !query.caseSensitive && ASCII_ONLY_PATTERN.test(normNeedle)
+    // 超长查询（例如误粘贴数万字符进搜索框）不能构造正则，避免触发 V8 Regular expression too large。
+    const asciiRegex = eligible &&
+      !query.caseSensitive &&
+      normNeedle.length <= MAX_ASCII_PREFILTER_REGEX_LENGTH &&
+      ASCII_ONLY_PATTERN.test(normNeedle)
       ? new RegExp(normNeedle.replace(REGEXP_SPECIAL_PATTERN, "\\$&"), "gi")
       : undefined;
     compiled = {
