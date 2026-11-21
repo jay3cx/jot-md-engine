@@ -175,7 +175,17 @@ function format_commands_and_dynamic_keybindings_share_one_catalog(): void {
   unsubscribe();
 }
 
-function search_engine_matches_unicode_boundaries_and_prunes_misses(): void {
+function awaitIncrementalSearch(
+  view: EditorView,
+  query: SearchQuery,
+  origin: number,
+): Promise<{ readonly from: number; readonly to: number } | undefined> {
+  return new Promise((resolve) => {
+    scheduleIncrementalSearch(view, query, origin, resolve);
+  });
+}
+
+async function search_engine_matches_unicode_boundaries_and_prunes_misses(): Promise<void> {
   const filler = "普通中文段落 abc 😀\n".repeat(4_800);
   const seamIndex = 65_530;
   const source = filler.slice(0, seamIndex) +
@@ -233,19 +243,63 @@ function search_engine_matches_unicode_boundaries_and_prunes_misses(): void {
   equal(isKnownSearchMiss(edited.doc, new SearchQuery({ search: "ffffffffff" })), false);
   equal(findNextMatchSync(edited.doc.toString(), edited, new SearchQuery({ search: "ffffffffff" }), 0, 0)?.from, 0);
 
-  // 增量搜索支持回绕定位与零匹配记录。
-  let incrementalResult: { readonly from: number; readonly to: number } | undefined;
+  // 增量搜索支持回绕定位与零匹配记录，且在让出时间片后异步收敛。
   const mockView = { state } as unknown as EditorView;
-  scheduleIncrementalSearch(mockView, new SearchQuery({ search: "target_seam" }), source.length - 4, (match) => {
-    incrementalResult = match;
+  const wrapped = await awaitIncrementalSearch(mockView, new SearchQuery({ search: "target_seam" }), source.length - 4);
+  equal(wrapped?.from, source.indexOf("target_seam"));
+
+  // 强制每次时间片检查都超时以覆盖 setTimeout 让出路径。
+  const originalNow = performance.now.bind(performance);
+  let fakeClock = 0;
+  Object.defineProperty(performance, "now", {
+    value: () => { fakeClock += 10; return fakeClock; },
+    configurable: true,
   });
-  equal(incrementalResult?.from, source.indexOf("target_seam"));
-  let missCalled = false;
-  scheduleIncrementalSearch(mockView, new SearchQuery({ search: "zzzzzzzzzz" }), 128, (match) => {
-    missCalled = match === undefined;
-  });
-  equal(missCalled, true);
-  equal(isKnownSearchMiss(state.doc, new SearchQuery({ search: "zzzzzzzzzzzz" })), true);
+  try {
+    const yieldedHit = await awaitIncrementalSearch(mockView, new SearchQuery({ search: "末行needle" }), 0);
+    equal(yieldedHit?.from, source.lastIndexOf("末行needle"));
+    const yieldedMiss = await awaitIncrementalSearch(mockView, new SearchQuery({ search: "zzzzzzzzzz" }), 128);
+    equal(yieldedMiss, undefined);
+    equal(isKnownSearchMiss(state.doc, new SearchQuery({ search: "zzzzzzzzzzzz" })), true);
+  } finally {
+    Object.defineProperty(performance, "now", { value: originalNow, configurable: true });
+  }
+}
+
+async function search_engine_preserves_regexp_and_whole_word_across_chunk_boundaries(): Promise<void> {
+  // 正则跨 65536 边界的长匹配与行尾锚点 `$` 不能被人工分块截断。
+  const longLine = `${"x".repeat(65_500)}START${"a".repeat(600)}END\nsecond`;
+  const regexState = EditorState.create({ doc: longLine, extensions: sourceSearch() });
+  const regexView = { state: regexState } as unknown as EditorView;
+  const spanQuery = new SearchQuery({ search: "STARTa{600}END", regexp: true });
+  const expectedSpan = spanQuery.getCursor(regexState, 0).next();
+  const actualSpan = await awaitIncrementalSearch(regexView, spanQuery, 0);
+  equal(actualSpan?.from, expectedSpan.value.from);
+  equal(actualSpan?.to, expectedSpan.value.to);
+  equal(findNextMatchSync(longLine, regexState, spanQuery, 0, 0)?.from, expectedSpan.value.from);
+
+  const eolQuery = new SearchQuery({ search: ".$", regexp: true });
+  const expectedEol = eolQuery.getCursor(regexState, 0).next();
+  const actualEol = await awaitIncrementalSearch(regexView, eolQuery, 0);
+  equal(actualEol?.from, expectedEol.value.from);
+  equal(actualEol?.to, expectedEol.value.to);
+  equal(actualEol?.to, longLine.indexOf("\n"));
+
+  // 全词搜索在分块边界处不能把词内子串误判为完整单词。
+  const catfishDoc = `${"x".repeat(65_564)} catfish `;
+  const catfishState = EditorState.create({ doc: catfishDoc, extensions: sourceSearch() });
+  const catfishView = { state: catfishState } as unknown as EditorView;
+  const wholeCat = new SearchQuery({ search: "cat", wholeWord: true });
+  equal(findNextMatchSync(catfishDoc, catfishState, wholeCat, 0, 0), undefined);
+  equal(findPreviousMatchSync(catfishDoc, catfishState, wholeCat, catfishDoc.length, catfishDoc.length), undefined);
+  equal(await awaitIncrementalSearch(catfishView, wholeCat, 0), undefined);
+
+  const standaloneDoc = `${"x".repeat(65_564)} catfish cat `;
+  const standaloneState = EditorState.create({ doc: standaloneDoc, extensions: sourceSearch() });
+  const standaloneView = { state: standaloneState } as unknown as EditorView;
+  const standalonePos = standaloneDoc.lastIndexOf("cat");
+  equal(findNextMatchSync(standaloneDoc, standaloneState, wholeCat, 0, 0)?.from, standalonePos);
+  equal((await awaitIncrementalSearch(standaloneView, wholeCat, 0))?.from, standalonePos);
 }
 
 function apply(source: string, edits: readonly { readonly range: { readonly from: number; readonly to: number }; readonly insert: string }[]): string {
@@ -264,7 +318,8 @@ function equal<T>(actual: T, expected: T): void {
 source_snapshots_share_only_the_latest_text_per_view();
 source_search_matches_full_document_and_respects_query_options();
 source_replace_all_is_one_undoable_transaction_and_honors_read_only();
-search_engine_matches_unicode_boundaries_and_prunes_misses();
+await search_engine_matches_unicode_boundaries_and_prunes_misses();
+await search_engine_preserves_regexp_and_whole_word_across_chunk_boundaries();
 engine_sync_preserves_selection_and_does_not_create_history();
 read_only_blocks_custom_input_but_allows_explicit_api_updates();
 format_commands_and_dynamic_keybindings_share_one_catalog();

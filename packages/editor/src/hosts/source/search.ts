@@ -41,6 +41,8 @@ export interface EditorSearchQuery {
   readonly literal?: boolean;
 }
 
+const activeSearchPanels = new WeakMap<EditorView, SourceSearchPanel>();
+
 export function sourceSearch(): Extension {
   return [search({ createPanel: (view) => new SourceSearchPanel(view) }), searchTheme];
 }
@@ -49,7 +51,19 @@ export function updateSourceSearch(view: EditorView, query: EditorSearchQuery): 
   view.dispatch({ effects: setSearchQuery.of(new SearchQuery(query)) });
 }
 
+/** 面板输入处于大文档防抖窗口时，返回面板当前草稿查询以保持公开读取一致。 */
+export function getSourceSearchQuery(view: EditorView): SearchQuery {
+  const panel = activeSearchPanels.get(view);
+  return panel?.hasPendingQuery() ? panel.currentDraftQuery() : getSearchQuery(view.state);
+}
+
+/** 在导航、替换等外部入口执行前，同步提交面板尚未落入状态的防抖输入。 */
+export function flushPendingSearchQuery(view: EditorView): void {
+  activeSearchPanels.get(view)?.flushPendingQuery();
+}
+
 export function openSourceSearch(view: EditorView, replace = false): boolean {
+  flushPendingSearchQuery(view);
   openSearchPanel(view);
   if (replace && !view.state.readOnly && getSearchQuery(view.state).valid) {
     const field = view.dom.querySelector<HTMLInputElement>(".cm-search input[name=replace]");
@@ -66,6 +80,7 @@ export function openSourceSearch(view: EditorView, replace = false): boolean {
  */
 function validSearchCommand(command: Command): Command {
   return (view) => {
+    flushPendingSearchQuery(view);
     const query = getSearchQuery(view.state);
     if (query.search.length > 0 && !query.valid) return false;
     return command(view);
@@ -85,7 +100,8 @@ function fastNavigationCommand(direction: "next" | "previous", fallback: Command
     const query = getSearchQuery(view.state);
     if (!query.valid) return fallback(view);
     if (isKnownSearchMiss(view.state.doc, query)) return false;
-    if (query.regexp || view.state.doc.length < LARGE_DOC_QUERY_DEBOUNCE_UNITS) {
+    if (query.regexp || query.wholeWord || query.test !== undefined ||
+        view.state.doc.length < LARGE_DOC_QUERY_DEBOUNCE_UNITS) {
       return fallback(view);
     }
     const main = view.state.selection.main;
@@ -185,6 +201,7 @@ class SourceSearchPanel implements Panel {
 
   constructor(view: EditorView) {
     this.#view = view;
+    activeSearchPanels.set(view, this);
     const document = view.dom.ownerDocument;
     this.dom = document.createElement("div");
     this.dom.className = "cm-search jot-search-panel";
@@ -303,11 +320,26 @@ class SourceSearchPanel implements Panel {
 
   destroy(): void {
     this.#destroyed = true;
+    if (activeSearchPanels.get(this.#view) === this) activeSearchPanels.delete(this.#view);
     this.#cancelPending();
     if (this.#compositionTimer !== undefined) clearTimeout(this.#compositionTimer);
     this.dom.removeEventListener("focusin", this.#onPanelFocus);
     this.#view.contentDOM.removeEventListener("focusin", this.#onEditorFocus);
     queueMicrotask(() => this.#restoreCursorAffinity());
+  }
+
+  hasPendingQuery(): boolean {
+    return this.#queryTimer !== undefined;
+  }
+
+  currentDraftQuery(): SearchQuery {
+    return this.#draftQuery();
+  }
+
+  flushPendingQuery(): void {
+    if (this.#destroyed || this.#queryTimer === undefined) return;
+    this.#cancelSearch();
+    this.#flushQuery();
   }
 
   update(update: ViewUpdate): void {

@@ -63,6 +63,11 @@ export function isKnownSearchMiss(doc: Text, query: SearchQuery): boolean {
  */
 export function recordSearchMiss(doc: Text, query: SearchQuery): void {
   if (!query.valid || query.regexp || query.wholeWord || query.test !== undefined) return;
+  recordNormalizedSubstringMiss(doc, query);
+}
+
+function recordNormalizedSubstringMiss(doc: Text, query: SearchQuery): void {
+  if (!query.valid || query.regexp || query.test !== undefined) return;
   const compiled = compilePrefilter(query);
   if (!compiled.eligible || compiled.normNeedle.length === 0) return;
   let cache = missCacheByDoc.get(doc);
@@ -107,7 +112,7 @@ export function chunkMayContainMatch(
   return normalized.toLowerCase().includes(compiled.normNeedle);
 }
 
-/** 同步查找从 `origin` 开始的下一个匹配（含回绕到文档头部），供命令与单测使用。 */
+/** 同步查找从 `curTo` 开始的下一个匹配（含回绕到文档头部），供命令与单测使用。 */
 export function findNextMatchSync(
   source: string,
   state: EditorState,
@@ -117,6 +122,30 @@ export function findNextMatchSync(
 ): SearchMatchRange | undefined {
   if (!query.valid || isKnownSearchMiss(state.doc, query)) return undefined;
   const length = state.doc.length;
+  if (query.regexp) {
+    const forward = advanceCursor(query.getCursor(state, curTo, length), false);
+    if (!forward.done) return { from: forward.value.from, to: forward.value.to };
+    const wrapped = advanceCursor(query.getCursor(state, 0, curFrom), false);
+    return wrapped.done ? undefined : { from: wrapped.value.from, to: wrapped.value.to };
+  }
+  if (query.wholeWord || query.test !== undefined) {
+    // 全词/自定义 test 依赖游标边界外字符，只能用分块预筛判断全文是否完全不含该子串；
+    // 一旦存在候选子串，必须回退到未截断范围的原始 CodeMirror 游标。
+    if (!rangeMayContainSubstringSync(source, 0, length, query)) {
+      recordNormalizedSubstringMiss(state.doc, query);
+      return undefined;
+    }
+    const forward = advanceCursor(query.getCursor(state, curTo, length), true);
+    if (!forward.done && (forward.value.from !== curFrom || forward.value.to !== curTo)) {
+      return { from: forward.value.from, to: forward.value.to };
+    }
+    const wrapEnd = Math.min(length, curFrom + unquoteSearch(query).length);
+    const wrapped = advanceCursor(query.getCursor(state, 0, wrapEnd), true);
+    if (!wrapped.done && (wrapped.value.from !== curFrom || wrapped.value.to !== curTo)) {
+      return { from: wrapped.value.from, to: wrapped.value.to };
+    }
+    return undefined;
+  }
   const overlap = chunkOverlap(query);
   const forward = scanForwardRangeSync(source, state, query, curTo, length, overlap);
   if (forward !== undefined && (forward.from !== curFrom || forward.to !== curTo)) {
@@ -143,6 +172,27 @@ export function findPreviousMatchSync(
 ): SearchMatchRange | undefined {
   if (!query.valid || isKnownSearchMiss(state.doc, query)) return undefined;
   const length = state.doc.length;
+  if (query.regexp) {
+    const backward = lastMatchInRangeSync(state, query, 0, curFrom, false);
+    if (backward !== undefined) return backward;
+    return lastMatchInRangeSync(state, query, curTo, length, false);
+  }
+  if (query.wholeWord || query.test !== undefined) {
+    if (!rangeMayContainSubstringSync(source, 0, length, query)) {
+      recordNormalizedSubstringMiss(state.doc, query);
+      return undefined;
+    }
+    const backward = lastMatchInRangeSync(state, query, 0, curFrom, true);
+    if (backward !== undefined && (backward.from !== curFrom || backward.to !== curTo)) {
+      return backward;
+    }
+    const wrapStart = Math.max(0, curTo - unquoteSearch(query).length);
+    const wrapped = lastMatchInRangeSync(state, query, wrapStart, length, true);
+    if (wrapped !== undefined && (wrapped.from !== curFrom || wrapped.to !== curTo)) {
+      return wrapped;
+    }
+    return undefined;
+  }
   const overlap = chunkOverlap(query);
   const backward = scanBackwardRangeSync(source, state, query, 0, curFrom, overlap);
   if (backward !== undefined && (backward.from !== curFrom || backward.to !== curTo)) {
@@ -162,8 +212,10 @@ export function findPreviousMatchSync(
 /**
  * 可取消的时间片增量搜索：从 `origin` 向文末扫描，再回绕扫描 `[0, origin)`。
  *
- * 在 1MB–5MB 文档上配合 NFKD 块级预筛通常在首个 4ms 时间片内同步收敛；
- * 在超大规模文档或正则查询下按时间片让出主线程，任何新输入可立即取消。
+ * - 普通子串：分块 NFKD 预筛 + 4ms 时间片扫描，仅在命中块上调用 `query.getCursor`。
+ * - 全词/自定义 test：先按时间片分块预筛是否全文无子串（无则直接返回）；
+ *   若存在候选子串，再走未截断的原始 CodeMirror 游标以保持词边界精确。
+ * - 正则表达式：直接走原始未分块 CodeMirror 游标，避免截断跨块匹配或伪造行尾 `$`。
  */
 export function scheduleIncrementalSearch(
   view: EditorView,
@@ -190,9 +242,53 @@ export function scheduleIncrementalSearch(
 
   const length = doc.length;
   const clampedOrigin = Math.max(0, Math.min(length, origin));
-  const overlap = chunkOverlap(query);
-  const source = sourceSnapshot(view);
+
+  const runExactUnchunked = (): void => {
+    let match = query.getCursor(state, clampedOrigin).next();
+    if (match.done && clampedOrigin > 0) match = query.getCursor(state, 0, clampedOrigin).next();
+    onDone(match.done ? undefined : { from: match.value.from, to: match.value.to });
+  };
+
+  if (query.regexp) {
+    runExactUnchunked();
+    return cancel;
+  }
+
   const compiled = compilePrefilter(query);
+  const source = sourceSnapshot(view);
+
+  if (query.wholeWord || query.test !== undefined) {
+    if (!compiled.eligible) {
+      runExactUnchunked();
+      return cancel;
+    }
+    const overlap = compiled.overlap;
+    let position = 0;
+    const prefilterStep = (): void => {
+      timer = undefined;
+      if (cancelled || view.state.doc !== doc) return;
+      const deadline = now() + TIME_SLICE_BUDGET_MS;
+      while (position < length) {
+        const chunkEnd = Math.min(length, position + SEARCH_CHUNK_UNITS);
+        const sliceEnd = Math.min(length, chunkEnd + overlap);
+        if (chunkMayContainMatch(source, position, sliceEnd, query)) {
+          runExactUnchunked();
+          return;
+        }
+        position = chunkEnd;
+        if (now() >= deadline && position < length) {
+          timer = setTimeout(prefilterStep, 0);
+          return;
+        }
+      }
+      recordNormalizedSubstringMiss(doc, query);
+      onDone(undefined);
+    };
+    prefilterStep();
+    return cancel;
+  }
+
+  const overlap = chunkOverlap(query);
   // 扫描阶段：0 表示 [origin, length]，1 表示回绕区间 [0, origin]。
   // 为了让零匹配缓存严格覆盖跨过 origin 接缝的匹配，回绕结束边界多留一个 overlap。
   const segments: Array<{ readonly from: number; readonly to: number; readonly acceptLimit: number }> = [
@@ -220,11 +316,7 @@ export function scheduleIncrementalSearch(
         position = segmentIndex < segments.length ? segments[segmentIndex]!.from : length;
         continue;
       }
-      let chunkEnd = Math.min(segment.to, position + SEARCH_CHUNK_UNITS);
-      if (query.regexp && chunkEnd < segment.to) {
-        const lineEnd = doc.lineAt(chunkEnd).to;
-        if (lineEnd <= segment.to && lineEnd - chunkEnd <= 4_096) chunkEnd = lineEnd;
-      }
+      const chunkEnd = Math.min(segment.to, position + SEARCH_CHUNK_UNITS);
       const sliceEnd = Math.min(segment.to, chunkEnd + overlap);
       if (!compiled.eligible || chunkMayContainMatch(source, position, sliceEnd, query)) {
         const cursor = query.getCursor(state, position, sliceEnd);
@@ -250,6 +342,40 @@ export function scheduleIncrementalSearch(
 
   step();
   return cancel;
+}
+
+function rangeMayContainSubstringSync(
+  source: string,
+  from: number,
+  to: number,
+  query: SearchQuery,
+): boolean {
+  const compiled = compilePrefilter(query);
+  if (!compiled.eligible) return true;
+  const overlap = compiled.overlap;
+  let position = from;
+  while (position < to) {
+    const end = Math.min(to, position + SEARCH_CHUNK_UNITS);
+    const sliceEnd = Math.min(to, end + overlap);
+    if (chunkMayContainMatch(source, position, sliceEnd, query)) return true;
+    position = end;
+  }
+  return false;
+}
+
+function lastMatchInRangeSync(
+  state: EditorState,
+  query: SearchQuery,
+  from: number,
+  to: number,
+  overlapping: boolean,
+): SearchMatchRange | undefined {
+  const cursor = query.getCursor(state, from, to);
+  let last: SearchMatchRange | undefined;
+  for (let next = advanceCursor(cursor, overlapping); !next.done; next = advanceCursor(cursor, overlapping)) {
+    last = { from: next.value.from, to: next.value.to };
+  }
+  return last;
 }
 
 function advanceCursor(
