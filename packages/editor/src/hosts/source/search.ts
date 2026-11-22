@@ -16,8 +16,7 @@ import { redo, undo } from "@codemirror/commands";
 import { EditorView, runScopeHandlers, type Command, type Panel, type ViewUpdate } from "@codemirror/view";
 import { EditorSelection, Transaction, type Extension } from "@codemirror/state";
 import {
-  findNextMatchSync,
-  findPreviousMatchSync,
+  hasNoSearchCandidate,
   isKnownSearchMiss,
   scheduleIncrementalSearch,
   type SearchMatchRange,
@@ -85,21 +84,20 @@ export function openSourceSearch(view: EditorView, replace = false): boolean {
  * has entered an invalid expression, every entry point keeps that expression
  * intact until corrected instead of replacing it with a previous selection.
  */
-function validSearchCommand(command: Command): Command {
+function searchCommand(command: Command, prefilterNavigation = false): Command {
   return (view) => {
     flushPendingSearchQuery(view);
-    const query = getSearchQuery(view.state);
-    if (query.search.length > 0 && !query.valid) return false;
+    const { state } = view;
+    const query = getSearchQuery(state);
+    if (!query.valid) return query.search.length === 0 && command(view);
+    if (isKnownSearchMiss(state.doc, query)) return false;
+    // Only short-circuit proven misses. CodeMirror owns match traversal and the
+    // host's scrollToMatch effect, as well as announcements and panel focus.
+    if (prefilterNavigation && state.doc.length >= LARGE_DOC_QUERY_DEBOUNCE_UNITS &&
+        !query.regexp && !query.wholeWord && query.test === undefined &&
+        hasNoSearchCandidate(sourceSnapshot(view), state.doc, query)) return false;
     return command(view);
   };
-}
-
-function skipKnownMiss(command: Command): Command {
-  return validSearchCommand((view) => {
-    const query = getSearchQuery(view.state);
-    if (query.valid && isKnownSearchMiss(view.state.doc, query)) return false;
-    return command(view);
-  });
 }
 
 function closeSearchPanel(view: EditorView): boolean {
@@ -124,32 +122,10 @@ function selectSearchMatch(view: EditorView, match: SearchMatchRange): void {
   });
 }
 
-function fastNavigationCommand(direction: "next" | "previous", fallback: Command): Command {
-  return validSearchCommand((view) => {
-    const query = getSearchQuery(view.state);
-    if (!query.valid) return fallback(view);
-    if (isKnownSearchMiss(view.state.doc, query)) return false;
-    if (query.regexp || query.wholeWord || query.test !== undefined ||
-        view.state.doc.length < LARGE_DOC_QUERY_DEBOUNCE_UNITS) {
-      return fallback(view);
-    }
-    const main = view.state.selection.main;
-    const source = sourceSnapshot(view);
-    const match = direction === "next"
-      ? findNextMatchSync(source, view.state, query, main.to, main.to)
-      : findPreviousMatchSync(source, view.state, query, main.from, main.from);
-    if (match === undefined) return false;
-    selectSearchMatch(view, match);
-    const input = view.dom?.querySelector<HTMLInputElement>(".cm-search input[main-field]");
-    if (input != null && input === view.dom.ownerDocument.activeElement) input.select();
-    return true;
-  });
-}
-
-const findNext = fastNavigationCommand("next", codeMirrorFindNext);
-const findPrevious = fastNavigationCommand("previous", codeMirrorFindPrevious);
-const replaceNext = skipKnownMiss(codeMirrorReplaceNext);
-const replaceAll = skipKnownMiss(codeMirrorReplaceAll);
+const findNext = searchCommand(codeMirrorFindNext, true);
+const findPrevious = searchCommand(codeMirrorFindPrevious, true);
+const replaceNext = searchCommand(codeMirrorReplaceNext);
+const replaceAll = searchCommand(codeMirrorReplaceAll);
 
 /** One host adapter for command palette, public API, and configured shortcuts. */
 export function executeSourceAction(view: EditorView, action: string): boolean | undefined {

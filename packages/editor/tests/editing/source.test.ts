@@ -9,14 +9,12 @@ import { history, undoDepth } from "@codemirror/commands";
 import { engineSynchronization, requestedOrigin, sourceReadOnlyFilter } from "../../src/hosts/source/synchronization.js";
 import { sourceSnapshot } from "../../src/hosts/shared/source-snapshot.js";
 import {
-  findNextMatchSync,
-  findPreviousMatchSync,
   isKnownSearchMiss,
   recordSearchMiss,
   scheduleIncrementalSearch,
   selectionMatchesSearchQuery,
 } from "../../src/hosts/shared/search-engine.js";
-import { SearchQuery } from "@codemirror/search";
+import { SearchQuery, setSearchQuery } from "@codemirror/search";
 import type { EditorView } from "@codemirror/view";
 import { executeSourceAction, sourceSearch, updateSourceSearch } from "../../src/hosts/source/search.js";
 
@@ -186,6 +184,21 @@ function awaitIncrementalSearch(
   });
 }
 
+function navigateSearch(
+  initial: EditorState,
+  query: SearchQuery,
+  action: "search.next" | "search.previous",
+  caret = 0,
+) {
+  let state = initial.update({ selection: EditorSelection.cursor(caret), effects: setSearchQuery.of(query) }).state;
+  const view = {
+    get state() { return state; },
+    dispatch(spec: TransactionSpec) { state = state.update(spec).state; },
+    plugin() { return null; },
+  } as unknown as EditorView;
+  return executeSourceAction(view, action) ? state.selection.main : undefined;
+}
+
 async function search_engine_matches_unicode_boundaries_and_prunes_misses(): Promise<void> {
   const filler = "普通中文段落 abc 😀\n".repeat(4_800);
   const seamIndex = 65_530;
@@ -205,7 +218,7 @@ async function search_engine_matches_unicode_boundaries_and_prunes_misses(): Pro
   ]) {
     const query = new SearchQuery(config);
     const expected = query.getCursor(state, 0).next();
-    const actual = findNextMatchSync(source, state, query, 0, 0);
+    const actual = navigateSearch(state, query, "search.next");
     equal(actual?.from, expected.done ? undefined : expected.value.from);
     equal(actual?.to, expected.done ? undefined : expected.value.to);
   }
@@ -213,25 +226,37 @@ async function search_engine_matches_unicode_boundaries_and_prunes_misses(): Pro
   // 反向查找支持重叠匹配与跨接缝回绕。
   const overlapQuery = new SearchQuery({ search: "aa" });
   const aaaStart = source.indexOf("aaa");
-  const prevOverlap = findPreviousMatchSync(source, state, overlapQuery, aaaStart + 3, aaaStart + 3);
+  const prevOverlap = navigateSearch(state, overlapQuery, "search.previous", aaaStart + 3);
   equal(prevOverlap?.from, aaaStart + 1);
   equal(prevOverlap?.to, aaaStart + 3);
 
-  // The extra scan overlap cannot extend the navigation wrap boundary.
+  // A normalized match across the wrap boundary is unreachable, but disproves a whole-document miss.
   const expandedFrom = 65_532;
   const expandedSource = "x".repeat(expandedFrom) + "株式会社" + "x".repeat(40);
-  const expandedState = EditorState.create({ doc: expandedSource });
+  const expandedState = EditorState.create({ doc: expandedSource, extensions: sourceSearch() });
   const expandedQuery = new SearchQuery({ search: "㍿" });
   const insideMatch = expandedFrom + 2;
-  equal(findNextMatchSync(expandedSource, expandedState, expandedQuery, insideMatch, insideMatch), undefined);
-  equal(findPreviousMatchSync(expandedSource, expandedState, expandedQuery, insideMatch, insideMatch), undefined);
+  equal(navigateSearch(expandedState, expandedQuery, "search.next", insideMatch), undefined);
+  equal(navigateSearch(expandedState, expandedQuery, "search.previous", insideMatch), undefined);
   equal(isKnownSearchMiss(expandedState.doc, expandedQuery), false);
-  equal(findNextMatchSync(expandedSource, expandedState, expandedQuery, 0, 0)?.from, expandedFrom);
+  equal(navigateSearch(expandedState, expandedQuery, "search.next")?.from, expandedFrom);
+
+  // Both the native and optimized document sizes must wrap from offset 3 to the
+  // composed match, even when an earlier normalized match overlaps that boundary.
+  for (const length of [32_767, 32_768, 32_769]) {
+    const hangul = ("각".normalize("NFD") + "각가").padEnd(length, "x");
+    const hangulState = EditorState.create({ doc: hangul, extensions: sourceSearch() });
+    const query = new SearchQuery({ search: "각가" });
+    const match = navigateSearch(hangulState, query, "search.previous", 3);
+    equal(match?.from, 3);
+    equal(match?.to, 5);
+    equal(isKnownSearchMiss(hangulState.doc, query), false);
+  }
 
   // 零匹配单调性：fff 无匹配后，ffff / ffffffffff / wholeWord / caseSensitive 均 O(1) 剪枝。
   const fff = new SearchQuery({ search: "fff" });
   equal(isKnownSearchMiss(state.doc, fff), false);
-  equal(findNextMatchSync(source, state, fff, 0, 0), undefined);
+  equal(navigateSearch(state, fff, "search.next"), undefined);
   equal(isKnownSearchMiss(state.doc, fff), true);
   equal(isKnownSearchMiss(state.doc, new SearchQuery({ search: "ffffffffff" })), true);
   equal(isKnownSearchMiss(state.doc, new SearchQuery({ search: "ffff", wholeWord: true })), true);
@@ -239,10 +264,10 @@ async function search_engine_matches_unicode_boundaries_and_prunes_misses(): Pro
 
   // 区分大小写的无匹配不得误剪枝不区分大小写的查询。
   const upperMissing = new SearchQuery({ search: "NEEDLE", caseSensitive: true });
-  equal(findNextMatchSync(source, state, upperMissing, 0, 0), undefined);
+  equal(navigateSearch(state, upperMissing, "search.next"), undefined);
   equal(isKnownSearchMiss(state.doc, upperMissing), true);
   equal(isKnownSearchMiss(state.doc, new SearchQuery({ search: "NEEDLE", caseSensitive: false })), false);
-  equal(findNextMatchSync(source, state, new SearchQuery({ search: "NEEDLE", caseSensitive: false }), 0, 0)?.from,
+  equal(navigateSearch(state, new SearchQuery({ search: "NEEDLE", caseSensitive: false }), "search.next")?.from,
     source.lastIndexOf("needle"));
 
   // wholeWord 的无匹配不能写入普通子串零匹配缓存。
@@ -253,7 +278,7 @@ async function search_engine_matches_unicode_boundaries_and_prunes_misses(): Pro
   // 文档编辑生成新 Text 实例后，旧零匹配缓存自然失效。
   const edited = state.update({ changes: { from: 0, insert: "ffffffffff " } }).state;
   equal(isKnownSearchMiss(edited.doc, new SearchQuery({ search: "ffffffffff" })), false);
-  equal(findNextMatchSync(edited.doc.toString(), edited, new SearchQuery({ search: "ffffffffff" }), 0, 0)?.from, 0);
+  equal(navigateSearch(edited, new SearchQuery({ search: "ffffffffff" }), "search.next")?.from, 0);
 
   // 增量搜索支持回绕定位与零匹配记录，且在让出时间片后异步收敛。
   const mockView = { state } as unknown as EditorView;
@@ -288,7 +313,7 @@ async function search_engine_preserves_regexp_and_whole_word_across_chunk_bounda
   const actualSpan = await awaitIncrementalSearch(regexView, spanQuery, 0);
   equal(actualSpan?.from, expectedSpan.value.from);
   equal(actualSpan?.to, expectedSpan.value.to);
-  equal(findNextMatchSync(longLine, regexState, spanQuery, 0, 0)?.from, expectedSpan.value.from);
+  equal(navigateSearch(regexState, spanQuery, "search.next")?.from, expectedSpan.value.from);
 
   const eolQuery = new SearchQuery({ search: ".$", regexp: true });
   const expectedEol = eolQuery.getCursor(regexState, 0).next();
@@ -302,15 +327,15 @@ async function search_engine_preserves_regexp_and_whole_word_across_chunk_bounda
   const catfishState = EditorState.create({ doc: catfishDoc, extensions: sourceSearch() });
   const catfishView = { state: catfishState } as unknown as EditorView;
   const wholeCat = new SearchQuery({ search: "cat", wholeWord: true });
-  equal(findNextMatchSync(catfishDoc, catfishState, wholeCat, 0, 0), undefined);
-  equal(findPreviousMatchSync(catfishDoc, catfishState, wholeCat, catfishDoc.length, catfishDoc.length), undefined);
+  equal(navigateSearch(catfishState, wholeCat, "search.next"), undefined);
+  equal(navigateSearch(catfishState, wholeCat, "search.previous", catfishDoc.length), undefined);
   equal(await awaitIncrementalSearch(catfishView, wholeCat, 0), undefined);
 
   const standaloneDoc = `${"x".repeat(65_564)} catfish cat `;
   const standaloneState = EditorState.create({ doc: standaloneDoc, extensions: sourceSearch() });
   const standaloneView = { state: standaloneState } as unknown as EditorView;
   const standalonePos = standaloneDoc.lastIndexOf("cat");
-  equal(findNextMatchSync(standaloneDoc, standaloneState, wholeCat, 0, 0)?.from, standalonePos);
+  equal(navigateSearch(standaloneState, wholeCat, "search.next")?.from, standalonePos);
   equal((await awaitIncrementalSearch(standaloneView, wholeCat, 0))?.from, standalonePos);
 
   // 选区命中判定对全词左右边界都不能误判，且不依赖扫描全文档。
@@ -330,8 +355,8 @@ async function search_engine_preserves_regexp_and_whole_word_across_chunk_bounda
   const hugeState = EditorState.create({ doc: hugeDoc, extensions: sourceSearch() });
   const hugeView = { state: hugeState } as unknown as EditorView;
   const hugeQuery = new SearchQuery({ search: hugeNeedle });
-  equal(findNextMatchSync(hugeDoc, hugeState, hugeQuery, 0, 0)?.from, 70_000);
-  equal(findPreviousMatchSync(hugeDoc, hugeState, hugeQuery, hugeDoc.length, hugeDoc.length)?.from, 70_000);
+  equal(navigateSearch(hugeState, hugeQuery, "search.next")?.from, 70_000);
+  equal(navigateSearch(hugeState, hugeQuery, "search.previous", hugeDoc.length)?.from, 70_000);
   equal((await awaitIncrementalSearch(hugeView, hugeQuery, 0))?.from, 70_000);
 }
 

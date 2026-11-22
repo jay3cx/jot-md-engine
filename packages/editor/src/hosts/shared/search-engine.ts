@@ -135,111 +135,10 @@ export function selectionMatchesSearchQuery(
   const hi = query.wholeWord ? Math.min(state.doc.length, to + 2) : to;
   const cursor = query.getCursor(state, lo, hi);
   for (;;) {
-    const match = advanceCursor(cursor, true);
+    const match = nextOverlappingMatch(cursor);
     if (match.done || match.value.from > from) return false;
     if (match.value.from === from && match.value.to === to) return true;
   }
-}
-
-/** 同步查找从 `curTo` 开始的下一个匹配（含回绕到文档头部），供命令与单测使用。 */
-export function findNextMatchSync(
-  source: string,
-  state: EditorState,
-  query: SearchQuery,
-  curFrom: number,
-  curTo: number,
-): SearchMatchRange | undefined {
-  if (!query.valid || isKnownSearchMiss(state.doc, query)) return undefined;
-  const length = state.doc.length;
-  if (query.regexp) {
-    const forward = advanceCursor(query.getCursor(state, curTo, length), false);
-    if (!forward.done) return { from: forward.value.from, to: forward.value.to };
-    const wrapped = advanceCursor(query.getCursor(state, 0, curFrom), false);
-    return wrapped.done ? undefined : { from: wrapped.value.from, to: wrapped.value.to };
-  }
-  if (query.wholeWord || query.test !== undefined) {
-    // 全词/自定义 test 依赖游标边界外字符，只能用分块预筛判断全文是否完全不含该子串；
-    // 一旦存在候选子串，必须回退到未截断范围的原始 CodeMirror 游标。
-    if (!rangeMayContainSubstringSync(source, 0, length, query)) {
-      recordNormalizedSubstringMiss(state.doc, query);
-      return undefined;
-    }
-    const forward = advanceCursor(query.getCursor(state, curTo, length), true);
-    if (!forward.done && (forward.value.from !== curFrom || forward.value.to !== curTo)) {
-      return { from: forward.value.from, to: forward.value.to };
-    }
-    const wrapEnd = Math.min(length, curFrom + unquoteSearch(query).length);
-    const wrapped = advanceCursor(query.getCursor(state, 0, wrapEnd), true);
-    if (!wrapped.done && (wrapped.value.from !== curFrom || wrapped.value.to !== curTo)) {
-      return { from: wrapped.value.from, to: wrapped.value.to };
-    }
-    return undefined;
-  }
-  const overlap = chunkOverlap(query);
-  const forward = scanForwardRangeSync(source, state, query, curTo, length, overlap);
-  if (forward !== undefined && (forward.from !== curFrom || forward.to !== curTo)) {
-    return forward;
-  }
-  const wrapLimit = Math.min(length, curFrom + unquoteSearch(query).length);
-  // Overlap can disprove a cached miss across the seam, but navigation keeps
-  // CodeMirror's original range, including when normalization expands a match.
-  const scanLimit = Math.min(length, Math.max(wrapLimit, curFrom + overlap));
-  const wrapped = scanForwardRangeSync(source, state, query, 0, scanLimit, overlap);
-  if (wrapped !== undefined && wrapped.to <= wrapLimit && (wrapped.from !== curFrom || wrapped.to !== curTo)) {
-    return wrapped;
-  }
-  if (forward === undefined && wrapped === undefined) {
-    recordSearchMiss(state.doc, query);
-  }
-  return undefined;
-}
-
-/** 同步向前查找匹配（含回绕到文档尾部）。 */
-export function findPreviousMatchSync(
-  source: string,
-  state: EditorState,
-  query: SearchQuery,
-  curFrom: number,
-  curTo: number,
-): SearchMatchRange | undefined {
-  if (!query.valid || isKnownSearchMiss(state.doc, query)) return undefined;
-  const length = state.doc.length;
-  if (query.regexp) {
-    const backward = lastMatchInRangeSync(state, query, 0, curFrom, false);
-    if (backward !== undefined) return backward;
-    return lastMatchInRangeSync(state, query, curTo, length, false);
-  }
-  if (query.wholeWord || query.test !== undefined) {
-    if (!rangeMayContainSubstringSync(source, 0, length, query)) {
-      recordNormalizedSubstringMiss(state.doc, query);
-      return undefined;
-    }
-    const backward = lastMatchInRangeSync(state, query, 0, curFrom, true);
-    if (backward !== undefined && (backward.from !== curFrom || backward.to !== curTo)) {
-      return backward;
-    }
-    const wrapStart = Math.max(0, curTo - unquoteSearch(query).length);
-    const wrapped = lastMatchInRangeSync(state, query, wrapStart, length, true);
-    if (wrapped !== undefined && (wrapped.from !== curFrom || wrapped.to !== curTo)) {
-      return wrapped;
-    }
-    return undefined;
-  }
-  const overlap = chunkOverlap(query);
-  const backward = scanBackwardRangeSync(source, state, query, 0, curFrom, overlap);
-  if (backward !== undefined && (backward.from !== curFrom || backward.to !== curTo)) {
-    return backward;
-  }
-  const wrapStart = Math.max(0, curTo - unquoteSearch(query).length);
-  const scanStart = Math.max(0, Math.min(wrapStart, curTo - overlap));
-  const wrapped = scanBackwardRangeSync(source, state, query, scanStart, length, overlap);
-  if (wrapped !== undefined && wrapped.from >= wrapStart && (wrapped.from !== curFrom || wrapped.to !== curTo)) {
-    return wrapped;
-  }
-  if (backward === undefined && wrapped === undefined) {
-    recordSearchMiss(state.doc, query);
-  }
-  return undefined;
 }
 
 /**
@@ -322,7 +221,7 @@ export function scheduleIncrementalSearch(
     return cancel;
   }
 
-  const overlap = chunkOverlap(query);
+  const overlap = compiled.overlap;
   const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
   // 扫描阶段：0 表示 [origin, length]，1 表示回绕区间 [0, origin]。
   // 为了让零匹配缓存严格覆盖跨过 origin 接缝的匹配，回绕结束边界多留一个 overlap。
@@ -379,103 +278,26 @@ export function scheduleIncrementalSearch(
   return cancel;
 }
 
-function rangeMayContainSubstringSync(
-  source: string,
-  from: number,
-  to: number,
-  query: SearchQuery,
-): boolean {
+/** Only a proven full-document substring miss can skip native navigation. */
+export function hasNoSearchCandidate(source: string, doc: Text, query: SearchQuery): boolean {
   const compiled = compilePrefilter(query);
-  if (!compiled.eligible) return true;
-  const overlap = compiled.overlap;
-  const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
-  let position = from;
-  while (position < to) {
-    const end = Math.min(to, position + stepSize);
-    const sliceEnd = Math.min(to, end + overlap);
-    if (chunkMayContainMatch(source, position, sliceEnd, query)) return true;
-    position = end;
+  if (!compiled.eligible) return false;
+  const stepSize = Math.max(SEARCH_CHUNK_UNITS, compiled.overlap);
+  for (let from = 0; from < source.length; from += stepSize) {
+    const to = Math.min(source.length, from + stepSize + compiled.overlap);
+    if (chunkMayContainMatch(source, from, to, query)) return false;
   }
-  return false;
+  recordNormalizedSubstringMiss(doc, query);
+  return true;
 }
 
-function lastMatchInRangeSync(
-  state: EditorState,
-  query: SearchQuery,
-  from: number,
-  to: number,
-  overlapping: boolean,
-): SearchMatchRange | undefined {
-  const cursor = query.getCursor(state, from, to);
-  let last: SearchMatchRange | undefined;
-  for (let next = advanceCursor(cursor, overlapping); !next.done; next = advanceCursor(cursor, overlapping)) {
-    last = { from: next.value.from, to: next.value.to };
-  }
-  return last;
-}
-
-function advanceCursor(
+function nextOverlappingMatch(
   cursor: ReturnType<SearchQuery["getCursor"]>,
-  overlapping: boolean,
 ): { readonly value: SearchMatchRange; readonly done?: boolean } {
-  if (overlapping && "nextOverlapping" in cursor && typeof cursor.nextOverlapping === "function") {
+  if ("nextOverlapping" in cursor && typeof cursor.nextOverlapping === "function") {
     return cursor.nextOverlapping();
   }
   return cursor.next();
-}
-
-function scanForwardRangeSync(
-  source: string,
-  state: EditorState,
-  query: SearchQuery,
-  from: number,
-  to: number,
-  overlap: number,
-): SearchMatchRange | undefined {
-  const compiled = compilePrefilter(query);
-  if (!compiled.eligible) {
-    const match = advanceCursor(query.getCursor(state, from, to), !query.regexp);
-    return match.done ? undefined : { from: match.value.from, to: match.value.to };
-  }
-  const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
-  let position = from;
-  while (position < to) {
-    const end = Math.min(to, position + stepSize);
-    const sliceEnd = Math.min(to, end + overlap);
-    if (chunkMayContainMatch(source, position, sliceEnd, query)) {
-      const match = advanceCursor(query.getCursor(state, position, sliceEnd), true);
-      if (!match.done) return { from: match.value.from, to: match.value.to };
-    }
-    position = end;
-  }
-  return undefined;
-}
-
-function scanBackwardRangeSync(
-  source: string,
-  state: EditorState,
-  query: SearchQuery,
-  from: number,
-  to: number,
-  overlap: number,
-): SearchMatchRange | undefined {
-  const compiled = compilePrefilter(query);
-  const stepSize = Math.max(SEARCH_CHUNK_UNITS, overlap);
-  let end = to;
-  while (end > from) {
-    const start = Math.max(from, end - stepSize);
-    const sliceStart = Math.max(from, start - overlap);
-    if (!compiled.eligible || chunkMayContainMatch(source, sliceStart, end, query)) {
-      const cursor = query.getCursor(state, sliceStart, end);
-      let last: SearchMatchRange | undefined;
-      for (let next = advanceCursor(cursor, !query.regexp); !next.done; next = advanceCursor(cursor, !query.regexp)) {
-        last = { from: next.value.from, to: next.value.to };
-      }
-      if (last !== undefined) return last;
-    }
-    end = start;
-  }
-  return undefined;
 }
 
 function compilePrefilter(query: SearchQuery): CompiledPrefilter {
@@ -508,10 +330,6 @@ function compilePrefilter(query: SearchQuery): CompiledPrefilter {
   }
   prefilterCache.set(query, compiled);
   return compiled;
-}
-
-function chunkOverlap(query: SearchQuery): number {
-  return query.regexp ? 256 : compilePrefilter(query).overlap;
 }
 
 function alignSliceStart(source: string, offset: number): number {

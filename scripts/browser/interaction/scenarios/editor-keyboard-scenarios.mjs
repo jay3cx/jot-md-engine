@@ -242,6 +242,32 @@ export async function runKeyboardScenarios({ c, load, settle, confirmed, key, sc
   await press('Escape');
   results.push({ case: 'keyboard-large-search-announcement', ...announcement });
 
+  for (const length of [32_767, 32_768]) {
+    const first = 'first needle\n', last = '\nlast needle';
+    await fresh(first.padEnd(length - last.length, 'padding text\n') + last);
+    const navigation = await c.evaluate(`(async()=>{
+      const { observeSearchScroll } = await import('/@fs${process.cwd()}/packages/editor/tests/browser-support/search-navigation.ts');
+      const probe = observeSearchScroll(view);
+      try {
+        editor.setSearchQuery({ search: 'needle', literal: true });
+        const next = editor.findNext(), previous = editor.findPrevious();
+        return { next, previous, centered: probe.ranges };
+      } finally { probe.stop(); }
+    })()`);
+    assert.deepEqual(navigation, { next: true, previous: true, centered: [[6, 12], [length - 6, length]] },
+      `both search directions dispatch the host's centering effect at ${length} UTF-16 units`);
+  }
+  results.push({ case: 'search-host-scroll-both-sides-of-threshold' });
+
+  await fresh(('각'.normalize('NFD') + '각가').padEnd(40_000, 'padding text\n'), 3);
+  const wrapped = await c.evaluate(`(()=>{
+    editor.setSearchQuery({ search: '각가', literal: true });
+    const found = editor.findPrevious(), { from, to } = view.state.selection.main;
+    return { found, from, to };
+  })()`);
+  assert.deepEqual(wrapped, { found: true, from: 3, to: 5 }, 'previous wraps to the composed match');
+  results.push({ case: 'search-previous-wrap-normalized-hangul', ...wrapped });
+
   await fresh('keyboard text', 0, 8);
   await press('p', { modifier: editorMod, shift: true }); await settle();
   assert(await c.evaluate(`document.activeElement instanceof HTMLInputElement && !view.contentDOM.contains(document.activeElement)`), 'command palette opens and owns keyboard focus');
